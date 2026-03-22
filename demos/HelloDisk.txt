@@ -1,0 +1,7 @@
+fn main() {
+    poke(0xFF30, 0);
+    Screen.clearScreen();
+    Output.moveCursor(2, 2);
+    Output.printString("HELLO FROM DISK");
+    halt();
+}

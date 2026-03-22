@@ -1,0 +1,1665 @@
+const VRAM_BASE: int = 0xEC00;
+const DISPLAY_CTRL: int = 0xFF30;
+const MODE_TEXT: int = 0;
+const MODE_PIXEL: int = 1;
+
+const WORDS_PER_ROW: int = 40;
+const SCREEN_H: int = 120;
+
+const NUM_COLS: int = 8;
+const NUM_ROWS: int = 4;
+const NUM_ALIENS: int = 32;
+
+const SHIELD_COUNT: int = 3;
+const PLAYER_BULLETS: int = 2;
+const ENEMY_BULLETS: int = 3;
+const BLASTS: int = 4;
+
+const PLAYER_W: int = 2;
+const PLAYER_H: int = 4;
+
+const BULLET_W: int = 1;
+const BULLET_H: int = 4;
+const BULLET_SPEED: int = 4;
+
+const ENEMY_BULLET_W: int = 1;
+const ENEMY_BULLET_H: int = 4;
+const ENEMY_BULLET_SPEED: int = 3;
+
+const ALIEN_W: int = 2;
+const ALIEN_H: int = 8;
+
+const UFO_W: int = 3;
+const UFO_H: int = 4;
+const UFO_Y: int = 4;
+
+const SHIELD_W: int = 3;
+const SHIELD_H: int = 6;
+const SHIELD_Y: int = 94;
+
+const FILL_BLACK: int   = 0x0000;
+const FILL_BLUE: int    = 0x1111;
+const FILL_GREEN: int   = 0x2222;
+const FILL_RED: int     = 0x4444;
+const FILL_CYAN: int    = 0xBBBB;
+const FILL_MAGENTA: int = 0xDDDD;
+const FILL_YELLOW: int  = 0xEEEE;
+const FILL_WHITE: int   = 0xFFFF;
+
+const MENU_START: int = 1;
+const MENU_QUIT: int = 0;
+
+const PAUSE_RESUME: int = 0;
+const PAUSE_RESTART: int = 1;
+const PAUSE_QUIT: int = 2;
+
+const OVER_RESTART: int = 1;
+const OVER_QUIT: int = 0;
+
+fn initRows(rows: Array) {
+    var y: int = 0;
+    var addr: int = VRAM_BASE;
+
+    while (y < SCREEN_H) {
+        rows[y] = addr;
+        addr = addr + WORDS_PER_ROW;
+        y = y + 1;
+    }
+}
+
+fn clearVram(rows: Array) {
+    var y: int = 0;
+    var x: int = 0;
+    var addr: int = 0;
+
+    while (y < SCREEN_H) {
+        addr = rows[y];
+        x = 0;
+        while (x < WORDS_PER_ROW) {
+            poke(addr + x, 0);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn fillBlock(rows: Array, wx: int, y: int, w: int, h: int, fill: int) {
+    var r: int = 0;
+    var c: int = 0;
+    var addr: int = 0;
+
+    while (r < h) {
+        addr = rows[y + r] + wx;
+        c = 0;
+        while (c < w) {
+            poke(addr + c, fill);
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+}
+
+fn makeNibbleLut(lut: Array, a: int, b: int, c: int, d: int) {
+    var i: int = 0;
+    var v: int = 0;
+
+    while (i < 16) {
+        v = 0;
+
+        if ((i & 8) != 0) {
+            v = v | a;
+        }
+        if ((i & 4) != 0) {
+            v = v | b;
+        }
+        if ((i & 2) != 0) {
+            v = v | c;
+        }
+        if ((i & 1) != 0) {
+            v = v | d;
+        }
+
+        lut[i] = v;
+        i = i + 1;
+    }
+}
+
+fn initAlienMasks(f0l: Array, f0r: Array, f1l: Array, f1r: Array) {
+    f0l[0] = 0x4;  f0r[0] = 0x2;
+    f0l[1] = 0xB;  f0r[1] = 0xD;
+    f0l[2] = 0xF;  f0r[2] = 0xF;
+    f0l[3] = 0xD;  f0r[3] = 0xB;
+    f0l[4] = 0xF;  f0r[4] = 0xF;
+    f0l[5] = 0x6;  f0r[5] = 0x6;
+    f0l[6] = 0x9;  f0r[6] = 0x9;
+    f0l[7] = 0x4;  f0r[7] = 0x2;
+
+    f1l[0] = 0x4;  f1r[0] = 0x2;
+    f1l[1] = 0xB;  f1r[1] = 0xD;
+    f1l[2] = 0xF;  f1r[2] = 0xF;
+    f1l[3] = 0xD;  f1r[3] = 0xB;
+    f1l[4] = 0xF;  f1r[4] = 0xF;
+    f1l[5] = 0x2;  f1r[5] = 0x4;
+    f1l[6] = 0x5;  f1r[6] = 0xA;
+    f1l[7] = 0x8;  f1r[7] = 0x1;
+}
+
+fn initAliens(alienWX: Array, alienY: Array, alienActive: Array, alienColor: Array, wave: int) {
+    var idx: int = 0;
+    var row: int = 0;
+    var col: int = 0;
+    var wx: int = 0;
+    var y: int = 8;
+
+    if (wave > 2) {
+        y = 10;
+    }
+    if (wave > 4) {
+        y = 12;
+    }
+
+    idx = 0;
+    row = 0;
+    while (row < NUM_ROWS) {
+        col = 0;
+        wx = 3;
+
+        while (col < NUM_COLS) {
+            alienWX[idx] = wx;
+            alienY[idx] = y;
+            alienActive[idx] = true;
+
+            if (row == 0) {
+                alienColor[idx] = 0;
+            } else if (row == 1) {
+                alienColor[idx] = 1;
+            } else if (row == 2) {
+                alienColor[idx] = 2;
+            } else {
+                alienColor[idx] = 3;
+            }
+
+            idx = idx + 1;
+            wx = wx + 4;
+            col = col + 1;
+        }
+
+        y = y + 10;
+        row = row + 1;
+    }
+}
+
+fn resetShields(shieldHP: Array) {
+    shieldHP[0] = 6;
+    shieldHP[1] = 6;
+    shieldHP[2] = 6;
+}
+
+fn drawPlayer(rows: Array, wx: int, y: int, invul: int) {
+    if ((invul > 0) & ((invul & 2) == 0)) {
+        return;
+    }
+
+    poke(rows[y + 0] + wx + 0, 0x0220);
+    poke(rows[y + 0] + wx + 1, 0x0000);
+
+    poke(rows[y + 1] + wx + 0, 0x2EE2);
+    poke(rows[y + 1] + wx + 1, 0x0000);
+
+    poke(rows[y + 2] + wx + 0, 0x2EE2);
+    poke(rows[y + 2] + wx + 1, 0x0000);
+
+    poke(rows[y + 3] + wx + 0, 0xEEEE);
+    poke(rows[y + 3] + wx + 1, 0xEEEE);
+}
+
+fn erasePlayer(rows: Array, wx: int, y: int) {
+    fillBlock(rows, wx, y, PLAYER_W, PLAYER_H, FILL_BLACK);
+}
+
+fn drawPlayerBullet(rows: Array, wx: int, y: int) {
+    if ((y >= 0) & ((y + BULLET_H - 1) < SCREEN_H)) {
+        fillBlock(rows, wx, y, BULLET_W, BULLET_H, FILL_YELLOW);
+    }
+}
+
+fn erasePlayerBullet(rows: Array, wx: int, y: int) {
+    if ((y >= 0) & ((y + BULLET_H - 1) < SCREEN_H)) {
+        fillBlock(rows, wx, y, BULLET_W, BULLET_H, FILL_BLACK);
+    }
+}
+
+fn drawEnemyBullet(rows: Array, wx: int, y: int) {
+    if ((y + 0) >= 0) {
+        if ((y + 0) < SCREEN_H) {
+            poke(rows[y + 0] + wx, 0x0400);
+        }
+    }
+    if ((y + 1) >= 0) {
+        if ((y + 1) < SCREEN_H) {
+            poke(rows[y + 1] + wx, 0x0040);
+        }
+    }
+    if ((y + 2) >= 0) {
+        if ((y + 2) < SCREEN_H) {
+            poke(rows[y + 2] + wx, 0x0400);
+        }
+    }
+    if ((y + 3) >= 0) {
+        if ((y + 3) < SCREEN_H) {
+            poke(rows[y + 3] + wx, 0x0040);
+        }
+    }
+}
+
+fn eraseEnemyBullet(rows: Array, wx: int, y: int) {
+    if ((y + 0) >= 0) {
+        if ((y + 0) < SCREEN_H) {
+            poke(rows[y + 0] + wx, FILL_BLACK);
+        }
+    }
+    if ((y + 1) >= 0) {
+        if ((y + 1) < SCREEN_H) {
+            poke(rows[y + 1] + wx, FILL_BLACK);
+        }
+    }
+    if ((y + 2) >= 0) {
+        if ((y + 2) < SCREEN_H) {
+            poke(rows[y + 2] + wx, FILL_BLACK);
+        }
+    }
+    if ((y + 3) >= 0) {
+        if ((y + 3) < SCREEN_H) {
+            poke(rows[y + 3] + wx, FILL_BLACK);
+        }
+    }
+}
+
+fn drawUfo(rows: Array, wx: int) {
+    poke(rows[UFO_Y + 0] + wx + 0, 0x0440);
+    poke(rows[UFO_Y + 0] + wx + 1, 0x4444);
+    poke(rows[UFO_Y + 0] + wx + 2, 0x0440);
+
+    poke(rows[UFO_Y + 1] + wx + 0, 0x4EEE);
+    poke(rows[UFO_Y + 1] + wx + 1, 0xEEEE);
+    poke(rows[UFO_Y + 1] + wx + 2, 0xEEE4);
+
+    poke(rows[UFO_Y + 2] + wx + 0, 0x0E00);
+    poke(rows[UFO_Y + 2] + wx + 1, 0xE00E);
+    poke(rows[UFO_Y + 2] + wx + 2, 0x00E0);
+
+    poke(rows[UFO_Y + 3] + wx + 0, 0x0004);
+    poke(rows[UFO_Y + 3] + wx + 1, 0x4004);
+    poke(rows[UFO_Y + 3] + wx + 2, 0x4000);
+}
+
+fn eraseUfo(rows: Array, wx: int) {
+    fillBlock(rows, wx, UFO_Y, UFO_W, UFO_H, FILL_BLACK);
+}
+
+fn drawShield(rows: Array, wx: int, y: int, hp: int) {
+    var fill: int = FILL_GREEN;
+
+    fillBlock(rows, wx, y, SHIELD_W, SHIELD_H, FILL_BLACK);
+
+    if (hp <= 0) {
+        return;
+    }
+
+    if (hp < 3) {
+        fill = FILL_RED;
+    } else if (hp < 5) {
+        fill = FILL_YELLOW;
+    }
+
+    if (hp >= 1) {
+        fillBlock(rows, wx, y + 0, 3, 1, fill);
+    }
+    if (hp >= 2) {
+        fillBlock(rows, wx, y + 1, 3, 1, fill);
+    }
+    if (hp >= 3) {
+        fillBlock(rows, wx, y + 2, 3, 1, fill);
+    }
+    if (hp >= 4) {
+        fillBlock(rows, wx, y + 3, 3, 1, fill);
+    }
+    if (hp >= 5) {
+        poke(rows[y + 4] + wx + 0, fill);
+        poke(rows[y + 4] + wx + 2, fill);
+    }
+    if (hp >= 6) {
+        poke(rows[y + 5] + wx + 0, fill);
+        poke(rows[y + 5] + wx + 2, fill);
+    }
+}
+
+fn drawLivesHud(rows: Array, lives: int) {
+    fillBlock(rows, 0, 0, 10, 2, FILL_BLACK);
+
+    if (lives >= 1) {
+        fillBlock(rows, 0, 0, 1, 2, FILL_CYAN);
+    }
+    if (lives >= 2) {
+        fillBlock(rows, 2, 0, 1, 2, FILL_CYAN);
+    }
+    if (lives >= 3) {
+        fillBlock(rows, 4, 0, 1, 2, FILL_CYAN);
+    }
+    if (lives >= 4) {
+        fillBlock(rows, 6, 0, 1, 2, FILL_CYAN);
+    }
+    if (lives >= 5) {
+        fillBlock(rows, 8, 0, 1, 2, FILL_CYAN);
+    }
+}
+
+fn drawWaveHud(rows: Array, wave: int) {
+    var blocks: int = wave;
+    var i: int = 0;
+
+    fillBlock(rows, 14, 0, 10, 2, FILL_BLACK);
+
+    if (blocks > 10) {
+        blocks = 10;
+    }
+
+    i = 0;
+    while (i < blocks) {
+        if ((i & 1) == 0) {
+            fillBlock(rows, 14 + i, 0, 1, 2, FILL_WHITE);
+        } else {
+            fillBlock(rows, 14 + i, 0, 1, 2, FILL_MAGENTA);
+        }
+        i = i + 1;
+    }
+}
+
+fn drawScoreHud(rows: Array, score: int) {
+    var bars: int = 0;
+    var i: int = 0;
+
+    fillBlock(rows, 26, 0, 14, 2, FILL_BLACK);
+
+    bars = score >> 4;
+    if (bars > 14) {
+        bars = 14;
+    }
+
+    i = 0;
+    while (i < bars) {
+        fillBlock(rows, 26 + i, 0, 1, 2, FILL_YELLOW);
+        i = i + 1;
+    }
+}
+
+fn drawAlien(
+    rows: Array,
+    wx: int,
+    y: int,
+    frame: int,
+    colorId: int,
+    lutRed: Array,
+    lutCyan: Array,
+    lutMagenta: Array,
+    lutWhite: Array,
+    f0l: Array,
+    f0r: Array,
+    f1l: Array,
+    f1r: Array
+) {
+    var lut: Array;
+    var r: int = 0;
+    var leftMask: int = 0;
+    var rightMask: int = 0;
+    var leftWord: int = 0;
+    var rightWord: int = 0;
+
+    if (colorId == 0) {
+        lut = lutRed;
+    } else if (colorId == 1) {
+        lut = lutCyan;
+    } else if (colorId == 2) {
+        lut = lutMagenta;
+    } else {
+        lut = lutWhite;
+    }
+
+    r = 0;
+    while (r < ALIEN_H) {
+        if (frame == 0) {
+            leftMask = f0l[r];
+            rightMask = f0r[r];
+        } else {
+            leftMask = f1l[r];
+            rightMask = f1r[r];
+        }
+
+        leftWord = lut[leftMask];
+        rightWord = lut[rightMask];
+
+        poke(rows[y + r] + wx + 0, leftWord);
+        poke(rows[y + r] + wx + 1, rightWord);
+
+        r = r + 1;
+    }
+}
+
+fn eraseAlien(rows: Array, wx: int, y: int) {
+    fillBlock(rows, wx, y, ALIEN_W, ALIEN_H, FILL_BLACK);
+}
+
+fn drawBlast(rows: Array, wx: int, y: int, timer: int) {
+    if (timer <= 0) {
+        return;
+    }
+
+    if (timer > 2) {
+        fillBlock(rows, wx, y, 2, 2, FILL_WHITE);
+    } else if (timer > 1) {
+        fillBlock(rows, wx, y, 2, 2, FILL_YELLOW);
+    } else {
+        fillBlock(rows, wx, y, 2, 2, FILL_RED);
+    }
+}
+
+fn eraseBlast(rows: Array, wx: int, y: int) {
+    fillBlock(rows, wx, y, 2, 2, FILL_BLACK);
+}
+
+fn spawnBlast(bx: Array, by: Array, bt: Array, wx: int, y: int) {
+    var i: int = 0;
+    var slot: int = -1;
+
+    i = 0;
+    while (i < BLASTS) {
+        if (bt[i] <= 0) {
+            slot = i;
+            i = BLASTS;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    if (slot >= 0) {
+        bx[slot] = wx;
+        by[slot] = y;
+        bt[slot] = 3;
+    }
+}
+
+fn updateBlasts(rows: Array, bx: Array, by: Array, bt: Array) {
+    var i: int = 0;
+
+    i = 0;
+    while (i < BLASTS) {
+        if (bt[i] > 0) {
+            eraseBlast(rows, bx[i], by[i]);
+            bt[i] = bt[i] - 1;
+            if (bt[i] > 0) {
+                drawBlast(rows, bx[i], by[i], bt[i]);
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn findBottomShooter(alienActive: Array, col: int) -> int {
+    if (alienActive[24 + col]) {
+        return 24 + col;
+    }
+    if (alienActive[16 + col]) {
+        return 16 + col;
+    }
+    if (alienActive[8 + col]) {
+        return 8 + col;
+    }
+    if (alienActive[col]) {
+        return col;
+    }
+    return -1;
+}
+
+fn playerToCol(playerWX: int) -> int {
+    if (playerWX < 5) {
+        return 0;
+    } else if (playerWX < 9) {
+        return 1;
+    } else if (playerWX < 13) {
+        return 2;
+    } else if (playerWX < 17) {
+        return 3;
+    } else if (playerWX < 21) {
+        return 4;
+    } else if (playerWX < 25) {
+        return 5;
+    } else if (playerWX < 29) {
+        return 6;
+    }
+    return 7;
+}
+
+fn findSmartShooter(alienActive: Array, playerWX: int, bias: int) -> int {
+    var target: int = 0;
+    var shooter: int = -1;
+
+    target = playerToCol(playerWX);
+
+    shooter = findBottomShooter(alienActive, target);
+    if (shooter >= 0) {
+        return shooter;
+    }
+
+    if ((bias & 1) == 0) {
+        if (target > 0) {
+            shooter = findBottomShooter(alienActive, target - 1);
+            if (shooter >= 0) {
+                return shooter;
+            }
+        }
+        if (target < 7) {
+            shooter = findBottomShooter(alienActive, target + 1);
+            if (shooter >= 0) {
+                return shooter;
+            }
+        }
+    } else {
+        if (target < 7) {
+            shooter = findBottomShooter(alienActive, target + 1);
+            if (shooter >= 0) {
+                return shooter;
+            }
+        }
+        if (target > 0) {
+            shooter = findBottomShooter(alienActive, target - 1);
+            if (shooter >= 0) {
+                return shooter;
+            }
+        }
+    }
+
+    if (target > 1) {
+        shooter = findBottomShooter(alienActive, target - 2);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+    if (target < 6) {
+        shooter = findBottomShooter(alienActive, target + 2);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+    if (target > 2) {
+        shooter = findBottomShooter(alienActive, target - 3);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+    if (target < 5) {
+        shooter = findBottomShooter(alienActive, target + 3);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+
+    shooter = findBottomShooter(alienActive, bias);
+    if (shooter >= 0) {
+        return shooter;
+    }
+
+    if (bias > 0) {
+        shooter = findBottomShooter(alienActive, bias - 1);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+    if (bias < 7) {
+        shooter = findBottomShooter(alienActive, bias + 1);
+        if (shooter >= 0) {
+            return shooter;
+        }
+    }
+
+    return -1;
+}
+
+fn showStartScreen() -> int {
+    var key: int = 0;
+
+    poke(DISPLAY_CTRL, MODE_TEXT);
+    Screen.clearScreen();
+
+    Output.moveCursor(4, 29);
+    Output.printString("NEXA INVADERS");
+
+    Output.moveCursor(8, 22);
+    Output.printString("A / LEFT   = MOVE LEFT");
+
+    Output.moveCursor(10, 22);
+    Output.printString("D / RIGHT  = MOVE RIGHT");
+
+    Output.moveCursor(12, 22);
+    Output.printString("SPACE      = FIRE");
+
+    Output.moveCursor(14, 22);
+    Output.printString("P          = PAUSE");
+
+    Output.moveCursor(18, 19);
+    Output.printString("PRESS ENTER OR SPACE TO START");
+
+    Output.moveCursor(20, 27);
+    Output.printString("PRESS Q TO QUIT");
+
+    loop {
+        key = Keyboard.keyPressed();
+
+        if ((key == 10) | (key == 13) | (key == 32)) {
+            return MENU_START;
+        }
+        if ((key == 81) | (key == 113)) {
+            return MENU_QUIT;
+        }
+
+        Sys.wait(20);
+    }
+}
+
+fn showPauseScreen(score: int, wave: int) -> int {
+    var key: int = 0;
+
+    poke(DISPLAY_CTRL, MODE_TEXT);
+    Screen.clearScreen();
+
+    Output.moveCursor(5, 34);
+    Output.printString("PAUSED");
+
+    Output.moveCursor(9, 26);
+    Output.printString("WAVE: ");
+    Output.printInt(wave);
+
+    Output.moveCursor(11, 26);
+    Output.printString("SCORE: ");
+    Output.printInt(score);
+
+    Output.moveCursor(15, 18);
+    Output.printString("P OR SPACE = RESUME");
+
+    Output.moveCursor(17, 18);
+    Output.printString("R          = RESTART");
+
+    Output.moveCursor(19, 18);
+    Output.printString("Q          = QUIT");
+
+    loop {
+        key = Keyboard.keyPressed();
+
+        if ((key == 80) | (key == 112) | (key == 32)) {
+            return PAUSE_RESUME;
+        }
+        if ((key == 82) | (key == 114)) {
+            return PAUSE_RESTART;
+        }
+        if ((key == 81) | (key == 113)) {
+            return PAUSE_QUIT;
+        }
+
+        Sys.wait(20);
+    }
+}
+
+fn showGameOverScreen(score: int, wave: int) -> int {
+    var key: int = 0;
+
+    poke(DISPLAY_CTRL, MODE_TEXT);
+    Screen.clearScreen();
+
+    Output.moveCursor(5, 31);
+    Output.printString("GAME OVER");
+
+    Output.moveCursor(9, 26);
+    Output.printString("WAVE REACHED: ");
+    Output.printInt(wave);
+
+    Output.moveCursor(11, 26);
+    Output.printString("SCORE: ");
+    Output.printInt(score);
+
+    Output.moveCursor(15, 18);
+    Output.printString("ENTER OR R  = NEW GAME");
+
+    Output.moveCursor(17, 18);
+    Output.printString("Q           = QUIT");
+
+    loop {
+        key = Keyboard.keyPressed();
+
+        if ((key == 10) | (key == 13) | (key == 82) | (key == 114)) {
+            return OVER_RESTART;
+        }
+        if ((key == 81) | (key == 113)) {
+            return OVER_QUIT;
+        }
+
+        Sys.wait(20);
+    }
+}
+
+fn main() {
+    var rows: Array = Array.new(SCREEN_H);
+
+    var lutRed: Array = Array.new(16);
+    var lutCyan: Array = Array.new(16);
+    var lutMagenta: Array = Array.new(16);
+    var lutWhite: Array = Array.new(16);
+
+    var f0l: Array = Array.new(8);
+    var f0r: Array = Array.new(8);
+    var f1l: Array = Array.new(8);
+    var f1r: Array = Array.new(8);
+
+    var alienWX: Array = Array.new(NUM_ALIENS);
+    var alienY: Array = Array.new(NUM_ALIENS);
+    var alienActive: Array = Array.new(NUM_ALIENS);
+    var alienColor: Array = Array.new(NUM_ALIENS);
+
+    var shieldWX: Array = Array.new(SHIELD_COUNT);
+    var shieldHP: Array = Array.new(SHIELD_COUNT);
+
+    var pBulletWX: Array = Array.new(PLAYER_BULLETS);
+    var pBulletY: Array = Array.new(PLAYER_BULLETS);
+    var pBulletActive: Array = Array.new(PLAYER_BULLETS);
+
+    var eBulletWX: Array = Array.new(ENEMY_BULLETS);
+    var eBulletY: Array = Array.new(ENEMY_BULLETS);
+    var eBulletActive: Array = Array.new(ENEMY_BULLETS);
+
+    var blastWX: Array = Array.new(BLASTS);
+    var blastY: Array = Array.new(BLASTS);
+    var blastT: Array = Array.new(BLASTS);
+
+    var playerWX: int = 19;
+    var playerY: int = 112;
+    var playerLives: int = 3;
+    var playerInvul: int = 0;
+    var fireCooldown: int = 0;
+
+    var wave: int = 1;
+    var score: int = 0;
+    var aliensAlive: int = NUM_ALIENS;
+
+    var alienDir: int = 1;
+    var alienTick: int = 0;
+    var alienFrame: int = 0;
+    var baseMoveEvery: int = 6;
+    var moveEvery: int = 6;
+    var moveDown: bool = false;
+    var aliensTooLow: bool = false;
+
+    var fireColumn: int = 0;
+    var fireTick: int = 0;
+    var fireEvery: int = 3;
+    var shooter: int = -1;
+    var bulletSlot: int = -1;
+    var smartBias: int = 0;
+
+    var ufoActive: bool = false;
+    var ufoWX: int = 0;
+    var ufoDir: int = 1;
+    var ufoSpawnTimer: int = 160;
+    var ufoMoveTick: int = 0;
+
+    var tShoot: int = 0;
+    var tHit: int = 0;
+    var tMarch: int = 0;
+    var tNoise: int = 0;
+
+    var key: int = 0;
+    var leftHeld: bool = false;
+    var rightHeld: bool = false;
+    var fireHeld: bool = false;
+
+    var i: int = 0;
+    var col: int = 0;
+    var hit: int = -1;
+    var shieldHit: int = -1;
+    var pauseAction: int = 0;
+    var outerAction: int = 0;
+    var startAction: int = 0;
+    var overAction: int = 0;
+
+    initRows(rows);
+
+    makeNibbleLut(lutRed,     0x4000, 0x0400, 0x0040, 0x0004);
+    makeNibbleLut(lutCyan,    0xB000, 0x0B00, 0x00B0, 0x000B);
+    makeNibbleLut(lutMagenta, 0xD000, 0x0D00, 0x00D0, 0x000D);
+    makeNibbleLut(lutWhite,   0xF000, 0x0F00, 0x00F0, 0x000F);
+
+    initAlienMasks(f0l, f0r, f1l, f1r);
+
+    shieldWX[0] = 5;
+    shieldWX[1] = 18;
+    shieldWX[2] = 31;
+
+    startAction = showStartScreen();
+    if (startAction == MENU_QUIT) {
+        rows.dispose();
+        lutRed.dispose();
+        lutCyan.dispose();
+        lutMagenta.dispose();
+        lutWhite.dispose();
+        f0l.dispose();
+        f0r.dispose();
+        f1l.dispose();
+        f1r.dispose();
+        alienWX.dispose();
+        alienY.dispose();
+        alienActive.dispose();
+        alienColor.dispose();
+        shieldWX.dispose();
+        shieldHP.dispose();
+        pBulletWX.dispose();
+        pBulletY.dispose();
+        pBulletActive.dispose();
+        eBulletWX.dispose();
+        eBulletY.dispose();
+        eBulletActive.dispose();
+        blastWX.dispose();
+        blastY.dispose();
+        blastT.dispose();
+        halt();
+    }
+
+    loop {
+        poke(DISPLAY_CTRL, MODE_PIXEL);
+        clearVram(rows);
+
+        playerWX = 19;
+        playerY = 112;
+        playerLives = 3;
+        playerInvul = 0;
+        fireCooldown = 0;
+
+        wave = 1;
+        score = 0;
+        aliensAlive = NUM_ALIENS;
+
+        alienDir = 1;
+        alienTick = 0;
+        alienFrame = 0;
+        fireColumn = 0;
+        fireTick = 0;
+        smartBias = 0;
+
+        ufoActive = false;
+        ufoWX = 0;
+        ufoDir = 1;
+        ufoSpawnTimer = 160;
+        ufoMoveTick = 0;
+
+        tShoot = 0;
+        tHit = 0;
+        tMarch = 0;
+        tNoise = 0;
+
+        initAliens(alienWX, alienY, alienActive, alienColor, wave);
+        resetShields(shieldHP);
+
+        i = 0;
+        while (i < PLAYER_BULLETS) {
+            pBulletActive[i] = false;
+            i = i + 1;
+        }
+
+        i = 0;
+        while (i < ENEMY_BULLETS) {
+            eBulletActive[i] = false;
+            i = i + 1;
+        }
+
+        i = 0;
+        while (i < BLASTS) {
+            blastT[i] = 0;
+            i = i + 1;
+        }
+
+        drawLivesHud(rows, playerLives);
+        drawWaveHud(rows, wave);
+        drawScoreHud(rows, score);
+        drawPlayer(rows, playerWX, playerY, playerInvul);
+
+        i = 0;
+        while (i < NUM_ALIENS) {
+            if (alienActive[i]) {
+                drawAlien(
+                    rows,
+                    alienWX[i],
+                    alienY[i],
+                    alienFrame,
+                    alienColor[i],
+                    lutRed,
+                    lutCyan,
+                    lutMagenta,
+                    lutWhite,
+                    f0l,
+                    f0r,
+                    f1l,
+                    f1r
+                );
+            }
+            i = i + 1;
+        }
+
+        i = 0;
+        while (i < SHIELD_COUNT) {
+            drawShield(rows, shieldWX[i], SHIELD_Y, shieldHP[i]);
+            i = i + 1;
+        }
+
+        FrameClock.init(30);
+        outerAction = 0;
+
+        loop {
+            key = Keyboard.keyPressed();
+
+            if ((key == 81) | (key == 113)) {
+                outerAction = 2;
+                break;
+            }
+
+            if ((key == 80) | (key == 112)) {
+                pauseAction = showPauseScreen(score, wave);
+
+                if (pauseAction == PAUSE_RESTART) {
+                    outerAction = 1;
+                    break;
+                }
+                if (pauseAction == PAUSE_QUIT) {
+                    outerAction = 2;
+                    break;
+                }
+
+                poke(DISPLAY_CTRL, MODE_PIXEL);
+                clearVram(rows);
+
+                drawLivesHud(rows, playerLives);
+                drawWaveHud(rows, wave);
+                drawScoreHud(rows, score);
+                drawPlayer(rows, playerWX, playerY, playerInvul);
+
+                i = 0;
+                while (i < NUM_ALIENS) {
+                    if (alienActive[i]) {
+                        drawAlien(
+                            rows,
+                            alienWX[i],
+                            alienY[i],
+                            alienFrame,
+                            alienColor[i],
+                            lutRed,
+                            lutCyan,
+                            lutMagenta,
+                            lutWhite,
+                            f0l,
+                            f0r,
+                            f1l,
+                            f1r
+                        );
+                    }
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < SHIELD_COUNT) {
+                    drawShield(rows, shieldWX[i], SHIELD_Y, shieldHP[i]);
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < PLAYER_BULLETS) {
+                    if (pBulletActive[i]) {
+                        drawPlayerBullet(rows, pBulletWX[i], pBulletY[i]);
+                    }
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < ENEMY_BULLETS) {
+                    if (eBulletActive[i]) {
+                        drawEnemyBullet(rows, eBulletWX[i], eBulletY[i]);
+                    }
+                    i = i + 1;
+                }
+
+                if (ufoActive) {
+                    drawUfo(rows, ufoWX);
+                }
+
+                i = 0;
+                while (i < BLASTS) {
+                    if (blastT[i] > 0) {
+                        drawBlast(rows, blastWX[i], blastY[i], blastT[i]);
+                    }
+                    i = i + 1;
+                }
+            }
+
+            if (playerLives <= 0) {
+                outerAction = 3;
+                break;
+            }
+
+            leftHeld = (key == 130) | (key == 97) | (key == 65);
+            rightHeld = (key == 132) | (key == 100) | (key == 68);
+            fireHeld = (key == 32);
+
+            if (tShoot > 0) {
+                tShoot = tShoot - 1;
+                if (tShoot == 0) {
+                    Sound.stopVoice(0);
+                }
+            }
+            if (tHit > 0) {
+                tHit = tHit - 1;
+                if (tHit == 0) {
+                    Sound.stopVoice(1);
+                }
+            }
+            if (tMarch > 0) {
+                tMarch = tMarch - 1;
+                if (tMarch == 0) {
+                    Sound.stopVoice(2);
+                }
+            }
+            if (tNoise > 0) {
+                tNoise = tNoise - 1;
+                if (tNoise == 0) {
+                    Sound.stopVoice(3);
+                }
+            }
+
+            if (fireCooldown > 0) {
+                fireCooldown = fireCooldown - 1;
+            }
+            if (playerInvul > 0) {
+                playerInvul = playerInvul - 1;
+            }
+
+            updateBlasts(rows, blastWX, blastY, blastT);
+
+            erasePlayer(rows, playerWX, playerY);
+
+            if (leftHeld) {
+                if (playerWX > 0) {
+                    playerWX = playerWX - 1;
+                }
+            } else if (rightHeld) {
+                if (playerWX < 38) {
+                    playerWX = playerWX + 1;
+                }
+            }
+
+            drawPlayer(rows, playerWX, playerY, playerInvul);
+
+            if (fireHeld & (fireCooldown == 0)) {
+                bulletSlot = -1;
+                i = 0;
+                while (i < PLAYER_BULLETS) {
+                    if (pBulletActive[i] == false) {
+                        bulletSlot = i;
+                        i = PLAYER_BULLETS;
+                    } else {
+                        i = i + 1;
+                    }
+                }
+
+                if (bulletSlot >= 0) {
+                    pBulletActive[bulletSlot] = true;
+                    pBulletWX[bulletSlot] = playerWX + 1;
+                    pBulletY[bulletSlot] = playerY - BULLET_H;
+
+                    drawPlayerBullet(rows, pBulletWX[bulletSlot], pBulletY[bulletSlot]);
+
+                    fireCooldown = 4;
+
+                    Sound.setVoice(0, 420, 6, 1);
+                    tShoot = 3;
+
+                    Sound.setVoice(3, 260, 2, 0);
+                    tNoise = 1;
+                }
+            }
+
+            i = 0;
+            while (i < PLAYER_BULLETS) {
+                if (pBulletActive[i]) {
+                    erasePlayerBullet(rows, pBulletWX[i], pBulletY[i]);
+                    pBulletY[i] = pBulletY[i] - BULLET_SPEED;
+                    if ((pBulletY[i] + BULLET_H - 1) < 0) {
+                        pBulletActive[i] = false;
+                    }
+                }
+                i = i + 1;
+            }
+
+            if (ufoActive) {
+                eraseUfo(rows, ufoWX);
+
+                ufoMoveTick = ufoMoveTick + 1;
+                if (ufoMoveTick >= 2) {
+                    ufoMoveTick = 0;
+                    ufoWX = ufoWX + ufoDir;
+                }
+
+                if ((ufoWX < 0) | (ufoWX > 37)) {
+                    ufoActive = false;
+                    ufoSpawnTimer = 160;
+                }
+            } else {
+                if (ufoSpawnTimer > 0) {
+                    ufoSpawnTimer = ufoSpawnTimer - 1;
+                } else {
+                    ufoActive = true;
+                    ufoMoveTick = 0;
+
+                    if ((wave & 1) == 0) {
+                        ufoDir = 1;
+                        ufoWX = 0;
+                    } else {
+                        ufoDir = -1;
+                        ufoWX = 37;
+                    }
+                }
+            }
+
+            i = 0;
+            while (i < PLAYER_BULLETS) {
+                if (pBulletActive[i]) {
+                    if (ufoActive) {
+                        if ((pBulletWX[i] >= ufoWX) & (pBulletWX[i] <= (ufoWX + UFO_W - 1))) {
+                            if ((pBulletY[i] <= (UFO_Y + UFO_H)) & ((pBulletY[i] + BULLET_H) >= UFO_Y)) {
+                                pBulletActive[i] = false;
+                                ufoActive = false;
+                                eraseUfo(rows, ufoWX);
+                                score = score + 50;
+                                drawScoreHud(rows, score);
+                                spawnBlast(blastWX, blastY, blastT, ufoWX, UFO_Y);
+
+                                Sound.setVoice(1, 300, 6, 2);
+                                tHit = 5;
+
+                                Sound.setVoice(3, 340, 3, 1);
+                                tNoise = 3;
+                            }
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < PLAYER_BULLETS) {
+                if (pBulletActive[i]) {
+                    shieldHit = -1;
+                    col = 0;
+                    while (col < SHIELD_COUNT) {
+                        if (shieldHP[col] > 0) {
+                            if ((pBulletWX[i] >= shieldWX[col]) & (pBulletWX[i] <= (shieldWX[col] + SHIELD_W - 1))) {
+                                if ((pBulletY[i] <= (SHIELD_Y + SHIELD_H - 1)) & ((pBulletY[i] + BULLET_H) >= SHIELD_Y)) {
+                                    shieldHit = col;
+                                    col = SHIELD_COUNT;
+                                } else {
+                                    col = col + 1;
+                                }
+                            } else {
+                                col = col + 1;
+                            }
+                        } else {
+                            col = col + 1;
+                        }
+                    }
+
+                    if (shieldHit >= 0) {
+                        shieldHP[shieldHit] = shieldHP[shieldHit] - 1;
+                        drawShield(rows, shieldWX[shieldHit], SHIELD_Y, shieldHP[shieldHit]);
+                        pBulletActive[i] = false;
+
+                        Sound.setVoice(3, 300, 2, 1);
+                        tNoise = 1;
+                    }
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < PLAYER_BULLETS) {
+                if (pBulletActive[i]) {
+                    hit = -1;
+                    col = 0;
+
+                    while (col < NUM_ALIENS) {
+                        if (alienActive[col]) {
+                            if ((pBulletWX[i] == alienWX[col]) | (pBulletWX[i] == (alienWX[col] + 1))) {
+                                if ((pBulletY[i] <= (alienY[col] + ALIEN_H)) & ((pBulletY[i] + BULLET_H) >= alienY[col])) {
+                                    hit = col;
+                                    col = NUM_ALIENS;
+                                } else {
+                                    col = col + 1;
+                                }
+                            } else {
+                                col = col + 1;
+                            }
+                        } else {
+                            col = col + 1;
+                        }
+                    }
+
+                    if (hit >= 0) {
+                        alienActive[hit] = false;
+                        eraseAlien(rows, alienWX[hit], alienY[hit]);
+                        pBulletActive[i] = false;
+                        aliensAlive = aliensAlive - 1;
+
+                        if (hit < 8) {
+                            score = score + 40;
+                        } else if (hit < 16) {
+                            score = score + 30;
+                        } else if (hit < 24) {
+                            score = score + 20;
+                        } else {
+                            score = score + 10;
+                        }
+
+                        drawScoreHud(rows, score);
+                        spawnBlast(blastWX, blastY, blastT, alienWX[hit], alienY[hit] + 2);
+
+                        Sound.setVoice(1, 320, 6, 1);
+                        tHit = 4;
+
+                        Sound.setVoice(3, 220, 3, 1);
+                        tNoise = 2;
+                    }
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < PLAYER_BULLETS) {
+                if (pBulletActive[i]) {
+                    drawPlayerBullet(rows, pBulletWX[i], pBulletY[i]);
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < ENEMY_BULLETS) {
+                if (eBulletActive[i]) {
+                    eraseEnemyBullet(rows, eBulletWX[i], eBulletY[i]);
+                    eBulletY[i] = eBulletY[i] + ENEMY_BULLET_SPEED;
+                    if ((eBulletY[i] + ENEMY_BULLET_H - 1) >= SCREEN_H) {
+                        eBulletActive[i] = false;
+                    }
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < ENEMY_BULLETS) {
+                if (eBulletActive[i]) {
+                    shieldHit = -1;
+                    col = 0;
+
+                    while (col < SHIELD_COUNT) {
+                        if (shieldHP[col] > 0) {
+                            if ((eBulletWX[i] >= shieldWX[col]) & (eBulletWX[i] <= (shieldWX[col] + SHIELD_W - 1))) {
+                                if ((eBulletY[i] <= (SHIELD_Y + SHIELD_H - 1)) & ((eBulletY[i] + ENEMY_BULLET_H) >= SHIELD_Y)) {
+                                    shieldHit = col;
+                                    col = SHIELD_COUNT;
+                                } else {
+                                    col = col + 1;
+                                }
+                            } else {
+                                col = col + 1;
+                            }
+                        } else {
+                            col = col + 1;
+                        }
+                    }
+
+                    if (shieldHit >= 0) {
+                        shieldHP[shieldHit] = shieldHP[shieldHit] - 1;
+                        drawShield(rows, shieldWX[shieldHit], SHIELD_Y, shieldHP[shieldHit]);
+                        eBulletActive[i] = false;
+
+                        Sound.setVoice(3, 280, 2, 0);
+                        tNoise = 1;
+                    } else {
+                        if (playerInvul == 0) {
+                            if ((eBulletWX[i] == playerWX) | (eBulletWX[i] == (playerWX + 1))) {
+                                if ((eBulletY[i] <= (playerY + PLAYER_H)) & ((eBulletY[i] + ENEMY_BULLET_H) >= playerY)) {
+                                    eBulletActive[i] = false;
+                                    playerLives = playerLives - 1;
+                                    playerInvul = 24;
+                                    drawLivesHud(rows, playerLives);
+                                    spawnBlast(blastWX, blastY, blastT, playerWX, playerY);
+
+                                    Sound.setVoice(1, 220, 7, 0);
+                                    tHit = 6;
+
+                                    Sound.setVoice(3, 180, 3, 1);
+                                    tNoise = 3;
+                                }
+                            }
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < ENEMY_BULLETS) {
+                if (eBulletActive[i]) {
+                    drawEnemyBullet(rows, eBulletWX[i], eBulletY[i]);
+                }
+                i = i + 1;
+            }
+
+            if (ufoActive) {
+                drawUfo(rows, ufoWX);
+            }
+
+            if (wave < 3) {
+                baseMoveEvery = 6;
+            } else if (wave < 5) {
+                baseMoveEvery = 5;
+            } else if (wave < 7) {
+                baseMoveEvery = 4;
+            } else {
+                baseMoveEvery = 3;
+            }
+
+            moveEvery = baseMoveEvery;
+            if (aliensAlive < 24) {
+                moveEvery = moveEvery - 1;
+            }
+            if (aliensAlive < 16) {
+                moveEvery = moveEvery - 1;
+            }
+            if (aliensAlive < 8) {
+                moveEvery = moveEvery - 1;
+            }
+            if (moveEvery < 1) {
+                moveEvery = 1;
+            }
+
+            if (wave < 3) {
+                fireEvery = 3;
+            } else if (wave < 6) {
+                fireEvery = 2;
+            } else {
+                fireEvery = 1;
+            }
+
+            alienTick = alienTick + 1;
+            if (alienTick >= moveEvery) {
+                alienTick = 0;
+
+                if (alienFrame == 0) {
+                    alienFrame = 1;
+                    Sound.setVoice(2, 700, 3, 1);
+                } else {
+                    alienFrame = 0;
+                    Sound.setVoice(2, 560, 3, 1);
+                }
+                tMarch = 2;
+
+                i = 0;
+                while (i < NUM_ALIENS) {
+                    if (alienActive[i]) {
+                        eraseAlien(rows, alienWX[i], alienY[i]);
+                    }
+                    i = i + 1;
+                }
+
+                moveDown = false;
+                i = 0;
+                while (i < NUM_ALIENS) {
+                    if (alienActive[i]) {
+                        alienWX[i] = alienWX[i] + alienDir;
+
+                        if ((alienWX[i] < 1) | (alienWX[i] > 37)) {
+                            moveDown = true;
+                        }
+                    }
+                    i = i + 1;
+                }
+
+                if (moveDown) {
+                    alienDir = -alienDir;
+
+                    i = 0;
+                    while (i < NUM_ALIENS) {
+                        if (alienActive[i]) {
+                            alienY[i] = alienY[i] + 4;
+                        }
+                        i = i + 1;
+                    }
+
+                    Sound.setVoice(3, 240, 2, 0);
+                    tNoise = 1;
+                }
+
+                aliensTooLow = false;
+                i = 0;
+                while (i < NUM_ALIENS) {
+                    if (alienActive[i]) {
+                        if ((alienY[i] + ALIEN_H) >= 110) {
+                            aliensTooLow = true;
+                            i = NUM_ALIENS;
+                        } else {
+                            i = i + 1;
+                        }
+                    } else {
+                        i = i + 1;
+                    }
+                }
+
+                if (aliensTooLow) {
+                    playerLives = 0;
+                } else {
+                    i = 0;
+                    while (i < NUM_ALIENS) {
+                        if (alienActive[i]) {
+                            drawAlien(
+                                rows,
+                                alienWX[i],
+                                alienY[i],
+                                alienFrame,
+                                alienColor[i],
+                                lutRed,
+                                lutCyan,
+                                lutMagenta,
+                                lutWhite,
+                                f0l,
+                                f0r,
+                                f1l,
+                                f1r
+                            );
+                        }
+                        i = i + 1;
+                    }
+                }
+
+                fireTick = fireTick + 1;
+                if (fireTick >= fireEvery) {
+                    fireTick = 0;
+
+                    bulletSlot = -1;
+                    i = 0;
+                    while (i < ENEMY_BULLETS) {
+                        if (eBulletActive[i] == false) {
+                            bulletSlot = i;
+                            i = ENEMY_BULLETS;
+                        } else {
+                            i = i + 1;
+                        }
+                    }
+
+                    if (bulletSlot >= 0) {
+                        shooter = findSmartShooter(alienActive, playerWX, smartBias);
+                        smartBias = smartBias + 1;
+                        if (smartBias >= NUM_COLS) {
+                            smartBias = 0;
+                        }
+
+                        if (shooter >= 0) {
+                            eBulletActive[bulletSlot] = true;
+                            eBulletWX[bulletSlot] = alienWX[shooter] + 1;
+                            eBulletY[bulletSlot] = alienY[shooter] + ALIEN_H;
+
+                            drawEnemyBullet(rows, eBulletWX[bulletSlot], eBulletY[bulletSlot]);
+
+                            Sound.setVoice(3, 320, 2, 1);
+                            tNoise = 1;
+                        }
+                    }
+                }
+            }
+
+            if (aliensAlive == 0) {
+                wave = wave + 1;
+                alienDir = 1;
+                alienFrame = 0;
+                alienTick = 0;
+                fireTick = 0;
+                fireCooldown = 0;
+                playerInvul = 0;
+                ufoActive = false;
+                ufoSpawnTimer = 120;
+                aliensAlive = NUM_ALIENS;
+
+                if (playerLives < 5) {
+                    playerLives = playerLives + 1;
+                }
+
+                resetShields(shieldHP);
+                initAliens(alienWX, alienY, alienActive, alienColor, wave);
+
+                i = 0;
+                while (i < PLAYER_BULLETS) {
+                    pBulletActive[i] = false;
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < ENEMY_BULLETS) {
+                    eBulletActive[i] = false;
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < BLASTS) {
+                    blastT[i] = 0;
+                    i = i + 1;
+                }
+
+                clearVram(rows);
+
+                drawLivesHud(rows, playerLives);
+                drawWaveHud(rows, wave);
+                drawScoreHud(rows, score);
+                drawPlayer(rows, playerWX, playerY, playerInvul);
+
+                i = 0;
+                while (i < NUM_ALIENS) {
+                    if (alienActive[i]) {
+                        drawAlien(
+                            rows,
+                            alienWX[i],
+                            alienY[i],
+                            alienFrame,
+                            alienColor[i],
+                            lutRed,
+                            lutCyan,
+                            lutMagenta,
+                            lutWhite,
+                            f0l,
+                            f0r,
+                            f1l,
+                            f1r
+                        );
+                    }
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < SHIELD_COUNT) {
+                    drawShield(rows, shieldWX[i], SHIELD_Y, shieldHP[i]);
+                    i = i + 1;
+                }
+
+                Sound.setVoice(0, 420, 5, 1);
+                Sound.setVoice(1, 320, 5, 1);
+                Sound.setVoice(2, 250, 4, 2);
+                tShoot = 2;
+                tHit = 2;
+                tMarch = 3;
+            }
+
+            FrameClock.waitNextFrame();
+        }
+
+        Sound.silence();
+
+        if (outerAction == 1) {
+            continue;
+        }
+
+        if (outerAction == 2) {
+            break;
+        }
+
+        overAction = showGameOverScreen(score, wave);
+        if (overAction == OVER_RESTART) {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    Sound.silence();
+
+    rows.dispose();
+
+    lutRed.dispose();
+    lutCyan.dispose();
+    lutMagenta.dispose();
+    lutWhite.dispose();
+
+    f0l.dispose();
+    f0r.dispose();
+    f1l.dispose();
+    f1r.dispose();
+
+    alienWX.dispose();
+    alienY.dispose();
+    alienActive.dispose();
+    alienColor.dispose();
+
+    shieldWX.dispose();
+    shieldHP.dispose();
+
+    pBulletWX.dispose();
+    pBulletY.dispose();
+    pBulletActive.dispose();
+
+    eBulletWX.dispose();
+    eBulletY.dispose();
+    eBulletActive.dispose();
+
+    blastWX.dispose();
+    blastY.dispose();
+    blastT.dispose();
+
+    halt();
+}

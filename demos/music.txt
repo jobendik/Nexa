@@ -1,0 +1,329 @@
+// ============================================================
+// C64-STYLE MUSIC PIECE FOR NEXA-16 / NEXA
+// "Night Drive 64"
+//
+// 4 channels used:
+//   ch0 = lead
+//   ch1 = bass
+//   ch2 = arpeggio
+//   ch3 = noise drums
+//
+// Note:
+// The musical structure is correct, but if your sound core plays
+// everything too high or too low, scale ALL note period constants
+// together (for example multiply all by 2 for one octave lower).
+// ============================================================
+
+const REST: int = 0;
+
+const STEP_MS: int = 120;
+const DRUM_MS: int = 28;
+
+const V_LEAD: int = 12;
+const V_BASS: int = 9;
+const V_ARP:  int = 6;
+
+// Approximate PSG-style note periods
+const N_E2:  int = 606;
+const N_F2:  int = 572;
+const N_G2:  int = 510;
+const N_A2:  int = 454;
+const N_B2:  int = 404;
+const N_C3:  int = 382;
+const N_D3:  int = 340;
+const N_E3:  int = 303;
+const N_F3:  int = 286;
+const N_G3:  int = 255;
+const N_A3:  int = 227;
+const N_B3:  int = 202;
+const N_C4:  int = 191;
+const N_D4:  int = 170;
+const N_E4:  int = 152;
+const N_F4:  int = 143;
+const N_G4:  int = 128;
+const N_GS4: int = 121;
+const N_A4:  int = 114;
+const N_B4:  int = 101;
+const N_C5:  int = 96;
+const N_D5:  int = 85;
+const N_E5:  int = 76;
+const N_F5:  int = 72;
+const N_G5:  int = 64;
+const N_GS5: int = 60;
+const N_A5:  int = 57;
+const N_B5:  int = 51;
+const N_C6:  int = 48;
+const N_E6:  int = 38;
+
+class Main {
+
+    fn setTone(channel: int, period: int, volume: int) {
+        if (period == REST) {
+            Sound.stopVoice(channel);
+        } else {
+            Sound.playNote(channel, period, volume);
+        }
+    }
+
+    fn playDrum(kind: int) {
+        if (kind == 1) {
+            // kick-ish
+            Sound.playNote(3, 220, 10);
+            return;
+        }
+        if (kind == 2) {
+            // snare-ish
+            Sound.playNote(3, 110, 8);
+            return;
+        }
+        if (kind == 3) {
+            // hi-hat-ish
+            Sound.playNote(3, 70, 5);
+            return;
+        }
+        Sound.stopVoice(3);
+    }
+
+    fn drumAt(step: int) -> int {
+        if (step == 0) { return 1; }
+        if (step == 2) { return 3; }
+        if (step == 4) { return 2; }
+        if (step == 6) { return 3; }
+        return 0;
+    }
+
+    fn rootForBar(bar: int) -> int {
+        if (bar == 0 || bar == 4) { return N_A2; }
+        if (bar == 1 || bar == 5) { return N_F2; }
+        if (bar == 2) { return N_C3; }
+        if (bar == 3) { return N_G2; }
+        if (bar == 6) { return N_D3; }
+        return N_E2;
+    }
+
+    fn fifthForBar(bar: int) -> int {
+        if (bar == 0 || bar == 4) { return N_E3; }
+        if (bar == 1 || bar == 5) { return N_C3; }
+        if (bar == 2) { return N_G3; }
+        if (bar == 3) { return N_D3; }
+        if (bar == 6) { return N_A3; }
+        return N_B2;
+    }
+
+    fn bassFor(bar: int, step: int) -> int {
+        if (step < 2) { return Main.rootForBar(bar); }
+        if (step < 4) { return Main.fifthForBar(bar); }
+        if (step < 6) { return Main.rootForBar(bar); }
+        return Main.fifthForBar(bar);
+    }
+
+    fn arpFor(bar: int, step: int) -> int {
+        var s: int = step & 3;
+
+        // Am
+        if (bar == 0 || bar == 4) {
+            if (s == 0) { return N_A4; }
+            if (s == 1) { return N_C5; }
+            if (s == 2) { return N_E5; }
+            return N_C5;
+        }
+
+        // F
+        if (bar == 1 || bar == 5) {
+            if (s == 0) { return N_F4; }
+            if (s == 1) { return N_A4; }
+            if (s == 2) { return N_C5; }
+            return N_A4;
+        }
+
+        // C
+        if (bar == 2) {
+            if (s == 0) { return N_E4; }
+            if (s == 1) { return N_G4; }
+            if (s == 2) { return N_C5; }
+            return N_G4;
+        }
+
+        // G
+        if (bar == 3) {
+            if (s == 0) { return N_D4; }
+            if (s == 1) { return N_G4; }
+            if (s == 2) { return N_B4; }
+            return N_G4;
+        }
+
+        // Dm
+        if (bar == 6) {
+            if (s == 0) { return N_D4; }
+            if (s == 1) { return N_F4; }
+            if (s == 2) { return N_A4; }
+            return N_F4;
+        }
+
+        // E
+        if (s == 0) { return N_E4; }
+        if (s == 1) { return N_GS4; }
+        if (s == 2) { return N_B4; }
+        return N_GS4;
+    }
+
+    fn leadFor(bar: int, step: int) -> int {
+        // Bar 0: Am
+        if (bar == 0) {
+            if (step == 0) { return N_E5; }
+            if (step == 1) { return N_E5; }
+            if (step == 2) { return N_G5; }
+            if (step == 3) { return N_A5; }
+            if (step == 4) { return N_G5; }
+            if (step == 5) { return N_E5; }
+            if (step == 6) { return N_D5; }
+            return N_C5;
+        }
+
+        // Bar 1: F
+        if (bar == 1) {
+            if (step == 0) { return N_C5; }
+            if (step == 1) { return N_A4; }
+            if (step == 2) { return N_C5; }
+            if (step == 3) { return N_E5; }
+            if (step == 4) { return N_F5; }
+            if (step == 5) { return N_E5; }
+            if (step == 6) { return N_C5; }
+            return N_A4;
+        }
+
+        // Bar 2: C
+        if (bar == 2) {
+            if (step == 0) { return N_G4; }
+            if (step == 1) { return N_C5; }
+            if (step == 2) { return N_E5; }
+            if (step == 3) { return N_G5; }
+            if (step == 4) { return N_E5; }
+            if (step == 5) { return N_C5; }
+            if (step == 6) { return N_G4; }
+            return N_E4;
+        }
+
+        // Bar 3: G
+        if (bar == 3) {
+            if (step == 0) { return N_D5; }
+            if (step == 1) { return N_B4; }
+            if (step == 2) { return N_D5; }
+            if (step == 3) { return N_G5; }
+            if (step == 4) { return N_F5; }
+            if (step == 5) { return N_D5; }
+            if (step == 6) { return N_B4; }
+            return N_G4;
+        }
+
+        // Bar 4: Am variation
+        if (bar == 4) {
+            if (step == 0) { return N_E5; }
+            if (step == 1) { return N_E5; }
+            if (step == 2) { return N_G5; }
+            if (step == 3) { return N_A5; }
+            if (step == 4) { return N_C6; }
+            if (step == 5) { return N_A5; }
+            if (step == 6) { return N_G5; }
+            return N_E5;
+        }
+
+        // Bar 5: F variation
+        if (bar == 5) {
+            if (step == 0) { return N_C5; }
+            if (step == 1) { return N_A4; }
+            if (step == 2) { return N_C5; }
+            if (step == 3) { return N_E5; }
+            if (step == 4) { return N_F5; }
+            if (step == 5) { return N_A5; }
+            if (step == 6) { return N_F5; }
+            return N_E5;
+        }
+
+        // Bar 6: Dm
+        if (bar == 6) {
+            if (step == 0) { return N_D5; }
+            if (step == 1) { return N_F5; }
+            if (step == 2) { return N_A5; }
+            if (step == 3) { return N_F5; }
+            if (step == 4) { return N_D5; }
+            if (step == 5) { return N_F5; }
+            if (step == 6) { return N_A5; }
+            return N_C6;
+        }
+
+        // Bar 7: E
+        if (step == 0) { return N_E5; }
+        if (step == 1) { return N_GS5; }
+        if (step == 2) { return N_B5; }
+        if (step == 3) { return N_GS5; }
+        if (step == 4) { return N_E5; }
+        if (step == 5) { return N_GS5; }
+        if (step == 6) { return N_B5; }
+        return N_E6;
+    }
+
+    fn playStep(leadP: int, bassP: int, arpP: int, drumKind: int) {
+        Main.setTone(0, leadP, V_LEAD);
+        Main.setTone(1, bassP, V_BASS);
+        Main.setTone(2, arpP,  V_ARP);
+
+        if (drumKind == 0) {
+            Sys.wait(STEP_MS);
+            return;
+        }
+
+        Main.playDrum(drumKind);
+        Sys.wait(DRUM_MS);
+        Sound.stopVoice(3);
+        Sys.wait(STEP_MS - DRUM_MS);
+    }
+
+    fn playTheme() {
+        var bar: int;
+        var step: int;
+        var lead: int;
+        var bass: int;
+        var arp: int;
+        var drum: int;
+
+        for (bar = 0; bar < 8; bar = bar + 1) {
+            for (step = 0; step < 8; step = step + 1) {
+                lead = Main.leadFor(bar, step);
+                bass = Main.bassFor(bar, step);
+                arp  = Main.arpFor(bar, step);
+                drum = Main.drumAt(step);
+                Main.playStep(lead, bass, arp, drum);
+            }
+        }
+    }
+
+    fn playEnding() {
+        // Small climb
+        Main.playStep(N_E5,  N_E2, N_GS4, 1);
+        Main.playStep(N_GS5, N_E2, N_B4,  3);
+        Main.playStep(N_B5,  N_E2, N_E5,  2);
+        Main.playStep(N_E6,  N_A2, N_C5,  3);
+
+        // Final A minor hold
+        Main.setTone(0, N_A5, V_LEAD);
+        Main.setTone(1, N_A2, V_BASS);
+        Main.setTone(2, N_E5, V_ARP);
+        Sys.wait(700);
+
+        // Small fade-like release
+        Main.setTone(0, N_A5, 8);
+        Main.setTone(1, N_A2, 6);
+        Main.setTone(2, N_C5, 4);
+        Sys.wait(400);
+
+        Sound.silence();
+    }
+
+    fn main() {
+        Sound.silence();
+        Main.playTheme();
+        Main.playEnding();
+        halt();
+    }
+}

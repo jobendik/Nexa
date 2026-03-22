@@ -1,0 +1,591 @@
+// ------------------------------------------------------------
+// NEXA TETRIS FOR NEXA-16
+// Flimmerfri tekstmodus-versjon
+//
+// Kontroller:
+//   a = venstre
+//   d = høyre
+//   w = roter
+//   s = hard drop
+// ------------------------------------------------------------
+
+const TEXT_BASE: int = 0xEC00;
+const MODE_REG: int = 0xFF30;
+const KEY_STATUS: int = 0xFF00;
+const KEY_DATA: int = 0xFF01;
+
+const BOARD_W: int = 10;
+const BOARD_H: int = 20;
+const BOARD_SIZE: int = 200;
+
+const BOARD_LEFT: int = 28;
+const BOARD_TOP: int = 4;
+
+const PIECE_I: int = 0;
+const PIECE_O: int = 1;
+const PIECE_T: int = 2;
+const PIECE_L: int = 3;
+const PIECE_J: int = 4;
+const PIECE_S: int = 5;
+const PIECE_Z: int = 6;
+
+class Tetris {
+    static board: Array;
+
+    static curType: int;
+    static curRot: int;
+    static curX: int;
+    static curY: int;
+
+    static seed: int;
+    static score: int;
+    static lines: int;
+    static gameOver: int;
+
+    static dropDelay: int;
+    static dropCounter: int;
+
+    // --------------------------------------------------------
+    // Tekstmodus-hjelpere
+    // --------------------------------------------------------
+
+    fn textCell(bg: int, fg: int, ch: int) -> int {
+        return (bg << 12) | (fg << 8) | ch;
+    }
+
+    fn putCell(row: int, col: int, fg: int, bg: int, ch: int) {
+        poke(TEXT_BASE + (row << 6) + (row << 4) + col, Tetris.textCell(bg, fg, ch));
+    }
+
+    fn setTextMode() {
+        poke(MODE_REG, 0);
+        Screen.clearScreen();
+    }
+
+    // --------------------------------------------------------
+    // Grunnleggende hjelpere
+    // --------------------------------------------------------
+
+    fn idx(x: int, y: int) -> int {
+        return (y << 3) + (y << 1) + x;
+    }
+
+    fn colorOf(kind: int) -> int {
+        if (kind == PIECE_I) { return 11; }
+        if (kind == PIECE_O) { return 14; }
+        if (kind == PIECE_T) { return 13; }
+        if (kind == PIECE_L) { return 6; }
+        if (kind == PIECE_J) { return 9; }
+        if (kind == PIECE_S) { return 10; }
+        return 12;
+    }
+
+    fn randomPiece() -> int {
+        seed = Math.modulo(Math.multiply(seed, 75) + 73, 32749);
+        return Math.modulo(seed, 7);
+    }
+
+    // --------------------------------------------------------
+    // Tetromino-masker (4x4 bitfelt)
+    // bit index = 15 - (row*4 + col)
+    // --------------------------------------------------------
+
+    fn pieceMask(kind: int, rot: int) -> int {
+        if (kind == PIECE_I) {
+            if ((rot & 1) == 0) { return 0x0F00; }
+            return 0x4444;
+        }
+
+        if (kind == PIECE_O) {
+            return 0x6600;
+        }
+
+        if (kind == PIECE_T) {
+            if (rot == 0) { return 0x4E00; }
+            if (rot == 1) { return 0x4640; }
+            if (rot == 2) { return 0x0E40; }
+            return 0x4C40;
+        }
+
+        if (kind == PIECE_L) {
+            if (rot == 0) { return 0x2E00; }
+            if (rot == 1) { return 0x4460; }
+            if (rot == 2) { return 0x0E80; }
+            return 0xC440;
+        }
+
+        if (kind == PIECE_J) {
+            if (rot == 0) { return 0x8E00; }
+            if (rot == 1) { return 0x6440; }
+            if (rot == 2) { return 0x0E20; }
+            return 0x44C0;
+        }
+
+        if (kind == PIECE_S) {
+            if ((rot & 1) == 0) { return 0x6C00; }
+            return 0x4620;
+        }
+
+        if ((rot & 1) == 0) { return 0xC600; }
+        return 0x2640;
+    }
+
+    fn maskCell(mask: int, row: int, col: int) -> bool {
+        var shift: int = 15 - ((row << 2) + col);
+        return ((Math.shiftRight(mask, shift) & 1) != 0);
+    }
+
+    // --------------------------------------------------------
+    // Brett / spill-logikk
+    // --------------------------------------------------------
+
+    fn clearBoard() {
+        var i: int = 0;
+        while (i < BOARD_SIZE) {
+            board[i] = 0;
+            i = i + 1;
+        }
+    }
+
+    fn canPlace(kind: int, rot: int, px: int, py: int) -> bool {
+        var mask: int = Tetris.pieceMask(kind, rot);
+        var r: int = 0;
+        var c: int;
+        var bx: int;
+        var by: int;
+
+        while (r < 4) {
+            c = 0;
+            while (c < 4) {
+                if (Tetris.maskCell(mask, r, c)) {
+                    bx = px + c;
+                    by = py + r;
+
+                    if (bx < 0) { return false; }
+                    if (bx >= BOARD_W) { return false; }
+                    if (by < 0) { return false; }
+                    if (by >= BOARD_H) { return false; }
+
+                    if (board[Tetris.idx(bx, by)] != 0) {
+                        return false;
+                    }
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+
+        return true;
+    }
+
+    fn spawnPiece() {
+        curType = Tetris.randomPiece();
+        curRot = 0;
+        curX = 3;
+        curY = 0;
+
+        if (!Tetris.canPlace(curType, curRot, curX, curY)) {
+            gameOver = 1;
+        }
+    }
+
+    fn lockPiece() {
+        var mask: int = Tetris.pieceMask(curType, curRot);
+        var r: int = 0;
+        var c: int;
+        var bx: int;
+        var by: int;
+        var color: int = Tetris.colorOf(curType);
+
+        while (r < 4) {
+            c = 0;
+            while (c < 4) {
+                if (Tetris.maskCell(mask, r, c)) {
+                    bx = curX + c;
+                    by = curY + r;
+
+                    if ((bx >= 0) && (bx < BOARD_W) && (by >= 0) && (by < BOARD_H)) {
+                        board[Tetris.idx(bx, by)] = color;
+                    }
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+
+        Tetris.clearLines();
+        Tetris.spawnPiece();
+    }
+
+    fn clearLines() {
+        var y: int = BOARD_H - 1;
+        var x: int;
+        var full: bool;
+        var yy: int;
+
+        while (y >= 0) {
+            full = true;
+            x = 0;
+
+            while (x < BOARD_W) {
+                if (board[Tetris.idx(x, y)] == 0) {
+                    full = false;
+                    break;
+                }
+                x = x + 1;
+            }
+
+            if (full) {
+                yy = y;
+                while (yy > 0) {
+                    x = 0;
+                    while (x < BOARD_W) {
+                        board[Tetris.idx(x, yy)] = board[Tetris.idx(x, yy - 1)];
+                        x = x + 1;
+                    }
+                    yy = yy - 1;
+                }
+
+                x = 0;
+                while (x < BOARD_W) {
+                    board[Tetris.idx(x, 0)] = 0;
+                    x = x + 1;
+                }
+
+                lines = lines + 1;
+                score = score + 100;
+
+                if ((Math.modulo(lines, 5) == 0) && (dropDelay > 1)) {
+                    dropDelay = dropDelay - 1;
+                }
+            } else {
+                y = y - 1;
+            }
+        }
+    }
+
+    fn stepFall() {
+        if (Tetris.canPlace(curType, curRot, curX, curY + 1)) {
+            curY = curY + 1;
+        } else {
+            Tetris.lockPiece();
+        }
+    }
+
+    fn hardDrop() {
+        while (Tetris.canPlace(curType, curRot, curX, curY + 1)) {
+            curY = curY + 1;
+        }
+        Tetris.lockPiece();
+    }
+
+    fn moveLeft() {
+        if (Tetris.canPlace(curType, curRot, curX - 1, curY)) {
+            curX = curX - 1;
+        }
+    }
+
+    fn moveRight() {
+        if (Tetris.canPlace(curType, curRot, curX + 1, curY)) {
+            curX = curX + 1;
+        }
+    }
+
+    fn rotatePiece() {
+        var newRot: int = (curRot + 1) & 3;
+
+        if (Tetris.canPlace(curType, newRot, curX, curY)) {
+            curRot = newRot;
+            return;
+        }
+
+        if (Tetris.canPlace(curType, newRot, curX - 1, curY)) {
+            curX = curX - 1;
+            curRot = newRot;
+            return;
+        }
+
+        if (Tetris.canPlace(curType, newRot, curX + 1, curY)) {
+            curX = curX + 1;
+            curRot = newRot;
+            return;
+        }
+    }
+
+    // --------------------------------------------------------
+    // Tastatur
+    // --------------------------------------------------------
+
+    fn readKey() -> int {
+        if (peek(KEY_STATUS) != 0) {
+            return peek(KEY_DATA);
+        }
+        return 0;
+    }
+
+    fn handleInput() {
+        var k: int = Tetris.readKey();
+
+        if ((k == 'a') || (k == 'A') || (k == 130)) {
+            Tetris.moveLeft();
+            return;
+        }
+
+        if ((k == 'd') || (k == 'D') || (k == 132)) {
+            Tetris.moveRight();
+            return;
+        }
+
+        if ((k == 'w') || (k == 'W') || (k == 131)) {
+            Tetris.rotatePiece();
+            return;
+        }
+
+        if ((k == 's') || (k == 'S') || (k == 133)) {
+            Tetris.hardDrop();
+            return;
+        }
+    }
+
+    // --------------------------------------------------------
+    // Rendering
+    // --------------------------------------------------------
+
+    fn drawBlockCell(boardX: int, boardY: int, color: int) {
+        var row: int = BOARD_TOP + boardY;
+        var col: int = BOARD_LEFT + (boardX << 1);
+
+        if (color == 0) {
+            Tetris.putCell(row, col, 0, 0, ' ');
+            Tetris.putCell(row, col + 1, 0, 0, ' ');
+        } else {
+            Tetris.putCell(row, col, color, color, ' ');
+            Tetris.putCell(row, col + 1, color, color, ' ');
+        }
+    }
+
+    fn drawFrame() {
+        var x: int = 0;
+        var y: int = 0;
+        var left: int = BOARD_LEFT - 1;
+        var right: int = BOARD_LEFT + (BOARD_W << 1);
+        var top: int = BOARD_TOP - 1;
+        var bottom: int = BOARD_TOP + BOARD_H;
+
+        while (x <= (BOARD_W << 1)) {
+            Tetris.putCell(top, left + x, 15, 0, '=');
+            Tetris.putCell(bottom, left + x, 15, 0, '=');
+            x = x + 1;
+        }
+
+        while (y < BOARD_H) {
+            Tetris.putCell(BOARD_TOP + y, left, 15, 0, '|');
+            Tetris.putCell(BOARD_TOP + y, right, 15, 0, '|');
+            y = y + 1;
+        }
+
+        Tetris.putCell(top, left, 15, 0, '+');
+        Tetris.putCell(top, right, 15, 0, '+');
+        Tetris.putCell(bottom, left, 15, 0, '+');
+        Tetris.putCell(bottom, right, 15, 0, '+');
+    }
+
+    fn drawBoard() {
+        var y: int = 0;
+        var x: int;
+        var color: int;
+
+        while (y < BOARD_H) {
+            x = 0;
+            while (x < BOARD_W) {
+                color = board[Tetris.idx(x, y)];
+                Tetris.drawBlockCell(x, y, color);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    fn drawCurrentPiece() {
+        var mask: int = Tetris.pieceMask(curType, curRot);
+        var r: int = 0;
+        var c: int;
+        var bx: int;
+        var by: int;
+        var color: int = Tetris.colorOf(curType);
+
+        while (r < 4) {
+            c = 0;
+            while (c < 4) {
+                if (Tetris.maskCell(mask, r, c)) {
+                    bx = curX + c;
+                    by = curY + r;
+
+                    if ((bx >= 0) && (bx < BOARD_W) && (by >= 0) && (by < BOARD_H)) {
+                        Tetris.drawBlockCell(bx, by, color);
+                    }
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+    }
+
+    fn drawNumber(row: int, col: int, value: int, width: int, color: int) {
+        var i: int = 0;
+        var pos: int = col + width - 1;
+        var n: int = value;
+        var digit: int;
+
+        while (i < width) {
+            if ((n > 0) || (i == 0)) {
+                digit = Math.modulo(n, 10);
+                Tetris.putCell(row, pos, color, 0, '0' + digit);
+                n = Math.divide(n, 10);
+            } else {
+                Tetris.putCell(row, pos, color, 0, ' ');
+            }
+
+            pos = pos - 1;
+            i = i + 1;
+        }
+    }
+
+    fn drawHudStatic() {
+        // TETRIS
+        Tetris.putCell(4, 55, 11, 0, 'T');
+        Tetris.putCell(4, 56, 11, 0, 'E');
+        Tetris.putCell(4, 57, 11, 0, 'T');
+        Tetris.putCell(4, 58, 11, 0, 'R');
+        Tetris.putCell(4, 59, 11, 0, 'I');
+        Tetris.putCell(4, 60, 11, 0, 'S');
+
+        // SCORE
+        Tetris.putCell(7, 55, 15, 0, 'S');
+        Tetris.putCell(7, 56, 15, 0, 'C');
+        Tetris.putCell(7, 57, 15, 0, 'O');
+        Tetris.putCell(7, 58, 15, 0, 'R');
+        Tetris.putCell(7, 59, 15, 0, 'E');
+
+        // LINES
+        Tetris.putCell(10, 55, 15, 0, 'L');
+        Tetris.putCell(10, 56, 15, 0, 'I');
+        Tetris.putCell(10, 57, 15, 0, 'N');
+        Tetris.putCell(10, 58, 15, 0, 'E');
+        Tetris.putCell(10, 59, 15, 0, 'S');
+
+        // Controls
+        Tetris.putCell(14, 55, 10, 0, 'A');
+        Tetris.putCell(14, 56, 10, 0, ':');
+        Tetris.putCell(14, 58, 10, 0, 'L');
+        Tetris.putCell(14, 59, 10, 0, 'E');
+        Tetris.putCell(14, 60, 10, 0, 'F');
+        Tetris.putCell(14, 61, 10, 0, 'T');
+
+        Tetris.putCell(15, 55, 10, 0, 'D');
+        Tetris.putCell(15, 56, 10, 0, ':');
+        Tetris.putCell(15, 58, 10, 0, 'R');
+        Tetris.putCell(15, 59, 10, 0, 'I');
+        Tetris.putCell(15, 60, 10, 0, 'G');
+        Tetris.putCell(15, 61, 10, 0, 'H');
+        Tetris.putCell(15, 62, 10, 0, 'T');
+
+        Tetris.putCell(16, 55, 10, 0, 'W');
+        Tetris.putCell(16, 56, 10, 0, ':');
+        Tetris.putCell(16, 58, 10, 0, 'R');
+        Tetris.putCell(16, 59, 10, 0, 'O');
+        Tetris.putCell(16, 60, 10, 0, 'T');
+        Tetris.putCell(16, 61, 10, 0, 'A');
+        Tetris.putCell(16, 62, 10, 0, 'T');
+        Tetris.putCell(16, 63, 10, 0, 'E');
+
+        Tetris.putCell(17, 55, 10, 0, 'S');
+        Tetris.putCell(17, 56, 10, 0, ':');
+        Tetris.putCell(17, 58, 10, 0, 'D');
+        Tetris.putCell(17, 59, 10, 0, 'R');
+        Tetris.putCell(17, 60, 10, 0, 'O');
+        Tetris.putCell(17, 61, 10, 0, 'P');
+    }
+
+    fn drawHudDynamic() {
+        Tetris.drawNumber(8, 55, score, 6, 15);
+        Tetris.drawNumber(11, 55, lines, 6, 15);
+    }
+
+    fn drawGameOver() {
+        Tetris.putCell(22, 53, 12, 0, 'G');
+        Tetris.putCell(22, 54, 12, 0, 'A');
+        Tetris.putCell(22, 55, 12, 0, 'M');
+        Tetris.putCell(22, 56, 12, 0, 'E');
+        Tetris.putCell(22, 58, 12, 0, 'O');
+        Tetris.putCell(22, 59, 12, 0, 'V');
+        Tetris.putCell(22, 60, 12, 0, 'E');
+        Tetris.putCell(22, 61, 12, 0, 'R');
+    }
+
+    fn render() {
+        Tetris.drawBoard();
+
+        if (gameOver == 0) {
+            Tetris.drawCurrentPiece();
+        }
+
+        Tetris.drawHudDynamic();
+
+        if (gameOver != 0) {
+            Tetris.drawGameOver();
+        }
+    }
+
+    // --------------------------------------------------------
+    // Init / run
+    // --------------------------------------------------------
+
+    fn init() {
+        Tetris.setTextMode();
+
+        board = Array.new(BOARD_SIZE);
+
+        seed = 1234;
+        score = 0;
+        lines = 0;
+        gameOver = 0;
+
+        dropDelay = 8;
+        dropCounter = 0;
+
+        Tetris.clearBoard();
+        Tetris.spawnPiece();
+
+        Screen.clearScreen();
+        Tetris.drawFrame();
+        Tetris.drawHudStatic();
+        Tetris.render();
+    }
+
+    fn run() {
+        Tetris.init();
+        FrameClock.init(14);
+
+        while (gameOver == 0) {
+            Tetris.handleInput();
+
+            dropCounter = dropCounter + 1;
+            if (dropCounter >= dropDelay) {
+                dropCounter = 0;
+                Tetris.stepFall();
+            }
+
+            Tetris.render();
+            FrameClock.waitNextFrame();
+        }
+
+        Tetris.render();
+        Time.sleep(2500);
+    }
+}
+
+fn main() {
+    Tetris.run();
+    halt();
+}

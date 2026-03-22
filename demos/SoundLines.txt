@@ -1,0 +1,425 @@
+// ============================================================
+// NEXA-16 NEXA SOUND DEMO — "SID LINES"
+//
+// Four horizontal rails in 160x120 pixel mode.
+// Channels 0-2 are tone voices; channel 3 is the noise voice.
+// The pulses wobble and move while a simple C64-style loop plays.
+// ============================================================
+
+class Main {
+
+    static energy0: int;
+    static energy1: int;
+    static energy2: int;
+    static energy3: int;
+
+    static gate0: int;
+    static gate1: int;
+    static gate2: int;
+
+    static prevX0: int;
+    static prevY0: int;
+    static prevW0: int;
+    static prevX1: int;
+    static prevY1: int;
+    static prevW1: int;
+    static prevX2: int;
+    static prevY2: int;
+    static prevW2: int;
+    static prevX3: int;
+    static prevY3: int;
+    static prevW3: int;
+
+    static drumDecay: int;
+    static drumRate: int;
+    static drumMode: int;
+    static drumVol: int;
+
+    fn wordFor(c: int) -> int {
+        if (c == 0) { return 0; }
+        if (c == 8) { return -30584; }
+        if (c == 10) { return -21846; }
+        if (c == 11) { return -17477; }
+        if (c == 12) { return -13108; }
+        if (c == 14) { return -4370; }
+        return -1;
+    }
+
+    fn fillWord(wx: int, y: int, c: int) {
+        var addr: int;
+        var row: int;
+        addr = -5120;
+        row = 0;
+        while (row < y) {
+            addr = addr + 40;
+            row = row + 1;
+        }
+        poke((addr + wx), Main.wordFor(c));
+    }
+
+    fn clearScreen() {
+        var addr: int;
+        addr = -5120;
+        while (addr < -320) {
+            poke(addr, 0);
+            addr = addr + 1;
+        }
+    }
+
+    fn drawRail(y: int) {
+        var wx: int;
+        wx = 0;
+        while (wx < 40) {
+            Main.fillWord(wx, y, 8);
+            wx = wx + 1;
+        }
+    }
+
+    fn drawRails() {
+        Main.drawRail(18);
+        Main.drawRail(44);
+        Main.drawRail(70);
+        Main.drawRail(96);
+    }
+
+    fn drawSpan(x0: int, width: int, y: int, c: int) {
+        var i: int;
+        var wx: int;
+        i = 0;
+        while (i < width) {
+            wx = (x0 + i);
+            if (wx > 39) {
+                wx = wx - 40;
+            }
+            Main.fillWord(wx, y, c);
+            i = i + 1;
+        }
+    }
+
+    fn erasePulse(x0: int, y0: int, width: int, base: int) {
+        Main.drawSpan(x0, width, (y0 - 1), 0);
+        Main.drawSpan(x0, width, (y0 + 1), 0);
+        if (y0 == base) {
+            Main.drawSpan(x0, width, y0, 8);
+        } else {
+            Main.drawSpan(x0, width, y0, 0);
+            Main.drawSpan(x0, width, base, 8);
+        }
+    }
+
+    fn wobble(frame: int, speed: int, amp: int) -> int {
+        var phase: int;
+        phase = ((frame * speed) & 31);
+        if (phase > 15) {
+            phase = (31 - phase);
+        }
+        return (((phase - 8) * amp) >> 3);
+    }
+
+    fn drawPulse(x0: int, width: int, y: int, c: int, e: int) {
+        Main.drawSpan(x0, width, y, c);
+        if (e > 3) {
+            Main.drawSpan(x0, width, (y - 1), c);
+            Main.drawSpan(x0, width, (y + 1), c);
+        }
+        Main.drawSpan((x0 + (width >> 1)), 1, y, 15);
+    }
+
+    fn drawCh0(frame: int) {
+        var width: int;
+        var x0: int;
+        var y: int;
+        width = (4 + (energy0 >> 2));
+        if (width > 10) { width = 10; }
+        x0 = Math.modulo((frame * 5), 40);
+        y = (18 + Main.wobble(frame, 4, (2 + energy0)));
+        Main.erasePulse(prevX0, prevY0, prevW0, 18);
+        Main.drawPulse(x0, width, y, 11, energy0);
+        prevX0 = x0;
+        prevY0 = y;
+        prevW0 = width;
+    }
+
+    fn drawCh1(frame: int) {
+        var width: int;
+        var x0: int;
+        var y: int;
+        width = (4 + (energy1 >> 2));
+        if (width > 10) { width = 10; }
+        x0 = Math.modulo((frame * 7), 40);
+        y = (44 + Main.wobble(frame, 5, (2 + energy1)));
+        Main.erasePulse(prevX1, prevY1, prevW1, 44);
+        Main.drawPulse(x0, width, y, 14, energy1);
+        prevX1 = x0;
+        prevY1 = y;
+        prevW1 = width;
+    }
+
+    fn drawCh2(frame: int) {
+        var width: int;
+        var x0: int;
+        var y: int;
+        width = (4 + (energy2 >> 2));
+        if (width > 10) { width = 10; }
+        x0 = Math.modulo((frame * 9), 40);
+        y = (70 + Main.wobble(frame, 7, (2 + energy2)));
+        Main.erasePulse(prevX2, prevY2, prevW2, 70);
+        Main.drawPulse(x0, width, y, 10, energy2);
+        prevX2 = x0;
+        prevY2 = y;
+        prevW2 = width;
+    }
+
+    fn drawCh3(frame: int) {
+        var width: int;
+        var x0: int;
+        var y: int;
+        width = (4 + (energy3 >> 2));
+        if (width > 10) { width = 10; }
+        x0 = Math.modulo((frame * 11), 40);
+        y = (96 + Main.wobble((frame + 5), 9, (2 + energy3)) + Main.wobble(frame, 3, (1 + (energy3 >> 1))));
+        Main.erasePulse(prevX3, prevY3, prevW3, 96);
+        Main.drawPulse(x0, width, y, 12, energy3);
+        prevX3 = x0;
+        prevY3 = y;
+        prevW3 = width;
+    }
+
+    fn drawFrame(frame: int) {
+        Main.drawCh0(frame);
+        Main.drawCh1(frame);
+        Main.drawCh2(frame);
+        Main.drawCh3(frame);
+    }
+
+    fn pulse0(period: int, volume: int, waveform: int, pulse: int, gate: int) {
+        if (period > 0) {
+            Sound.setVoice(0, period, volume, waveform);
+            energy0 = pulse;
+            gate0 = gate;
+        } else {
+            Sound.stopVoice(0);
+            energy0 = 0;
+            gate0 = 0;
+        }
+    }
+
+    fn pulse1(period: int, volume: int, waveform: int, pulse: int, gate: int) {
+        if (period > 0) {
+            Sound.setVoice(1, period, volume, waveform);
+            energy1 = pulse;
+            gate1 = gate;
+        } else {
+            Sound.stopVoice(1);
+            energy1 = 0;
+            gate1 = 0;
+        }
+    }
+
+    fn pulse2(period: int, volume: int, waveform: int, pulse: int, gate: int) {
+        if (period > 0) {
+            Sound.setVoice(2, period, volume, waveform);
+            energy2 = pulse;
+            gate2 = gate;
+        } else {
+            Sound.stopVoice(2);
+            energy2 = 0;
+            gate2 = 0;
+        }
+    }
+
+    fn tickGates() {
+        if (gate0 > 0) {
+            gate0 = gate0 - 1;
+            if (gate0 == 0) { Sound.stopVoice(0); }
+        }
+        if (gate1 > 0) {
+            gate1 = gate1 - 1;
+            if (gate1 == 0) { Sound.stopVoice(1); }
+        }
+        if (gate2 > 0) {
+            gate2 = gate2 - 1;
+            if (gate2 == 0) { Sound.stopVoice(2); }
+        }
+    }
+
+    fn tickNoise() {
+        if (drumDecay > 0) {
+            drumDecay = drumDecay - 1;
+            if (drumDecay == 2) {
+                Sound.setVoice(3, (drumRate + 16), (drumVol - 3), drumMode);
+            } else {
+                if (drumDecay == 1) {
+                    Sound.setVoice(3, (drumRate + 32), (drumVol - 6), drumMode);
+                } else {
+                    if (drumDecay == 0) {
+                        Sound.stopVoice(3);
+                    }
+                }
+            }
+        }
+    }
+
+    fn triggerDrum(kind: int) {
+        if (kind == 1) {
+            drumRate = 900;
+            drumMode = 0;
+            drumVol = 10;
+            drumDecay = 3;
+            Sound.setVoice(3, drumRate, drumVol, drumMode);
+            energy3 = 14;
+        } else {
+            if (kind == 2) {
+                drumRate = 320;
+                drumMode = 2;
+                drumVol = 9;
+                drumDecay = 3;
+                Sound.setVoice(3, drumRate, drumVol, drumMode);
+                energy3 = 13;
+            } else {
+                if (kind == 3) {
+                    drumRate = 160;
+                    drumMode = 1;
+                    drumVol = 6;
+                    drumDecay = 2;
+                    Sound.setVoice(3, drumRate, drumVol, drumMode);
+                    energy3 = 10;
+                } else {
+                    if (kind == 4) {
+                        drumRate = 220;
+                        drumMode = 3;
+                        drumVol = 8;
+                        drumDecay = 4;
+                        Sound.setVoice(3, drumRate, drumVol, drumMode);
+                        energy3 = 15;
+                    }
+                }
+            }
+        }
+    }
+
+    fn leadNote(step: int) -> int {
+        if (step == 0) { return 1911; }
+        if (step == 1) { return 1703; }
+        if (step == 2) { return 1517; }
+        if (step == 3) { return 1703; }
+        if (step == 4) { return 1911; }
+        if (step == 5) { return 2273; }
+        if (step == 6) { return 2551; }
+        if (step == 7) { return 2273; }
+        if (step == 8) { return 1911; }
+        if (step == 9) { return 1703; }
+        if (step == 10) { return 1517; }
+        if (step == 11) { return 1276; }
+        if (step == 12) { return 1517; }
+        if (step == 13) { return 1703; }
+        if (step == 14) { return 1911; }
+        return 0;
+    }
+
+    fn bassNote(step: int) -> int {
+        if (step == 0) { return 3822; }
+        if (step == 1) { return 3822; }
+        if (step == 2) { return 3034; }
+        if (step == 3) { return 3034; }
+        if (step == 4) { return 2551; }
+        if (step == 5) { return 2551; }
+        if (step == 6) { return 3405; }
+        return 3405;
+    }
+
+    fn arpNote(step: int) -> int {
+        if (step == 0) { return 3822; }
+        if (step == 1) { return 3034; }
+        if (step == 2) { return 2551; }
+        if (step == 3) { return 3034; }
+        if (step == 4) { return 3405; }
+        if (step == 5) { return 2863; }
+        if (step == 6) { return 2273; }
+        return 2863;
+    }
+
+    fn drumHit(step: int) -> int {
+        if (step == 0) { return 1; }
+        if (step == 1) { return 0; }
+        if (step == 2) { return 3; }
+        if (step == 3) { return 0; }
+        if (step == 4) { return 2; }
+        if (step == 5) { return 3; }
+        if (step == 6) { return 0; }
+        return 4;
+    }
+
+    fn updateMusic(frame: int) {
+        var step: int;
+
+        Main.tickGates();
+        Main.tickNoise();
+
+        if ((frame & 7) == 0) {
+            step = ((frame >> 3) & 15);
+            Main.pulse0(Main.leadNote(step), 9, 0, 12, 5);
+            Main.triggerDrum(Main.drumHit((step & 7)));
+        }
+
+        if ((frame & 15) == 0) {
+            step = ((frame >> 4) & 7);
+            Main.pulse1(Main.bassNote(step), 8, 2, 10, 11);
+        }
+
+        if ((frame & 3) == 0) {
+            step = ((frame >> 2) & 7);
+            Main.pulse2(Main.arpNote(step), 6, 1, 8, 2);
+        }
+    }
+
+    fn decayVisuals() {
+        if (energy0 > 0) { energy0 = energy0 - 1; }
+        if (energy1 > 0) { energy1 = energy1 - 1; }
+        if (energy2 > 0) { energy2 = energy2 - 1; }
+        if (energy3 > 0) { energy3 = energy3 - 1; }
+    }
+
+    fn initState() {
+        energy0 = 0;
+        energy1 = 0;
+        energy2 = 0;
+        energy3 = 0;
+        gate0 = 0;
+        gate1 = 0;
+        gate2 = 0;
+
+        prevX0 = 0; prevY0 = 18; prevW0 = 6;
+        prevX1 = 0; prevY1 = 44; prevW1 = 6;
+        prevX2 = 0; prevY2 = 70; prevW2 = 6;
+        prevX3 = 0; prevY3 = 96; prevW3 = 6;
+
+        drumDecay = 0;
+        drumRate = 0;
+        drumMode = 0;
+        drumVol = 0;
+    }
+
+    fn main() {
+        var frame: int;
+
+        poke(0xFF30, 1);
+        Main.initState();
+        FrameClock.init(36);
+        Sound.silence();
+        Main.clearScreen();
+        Main.drawRails();
+
+        frame = 0;
+        loop {
+            Main.updateMusic(frame);
+            Main.drawFrame(frame);
+            FrameClock.waitNextFrame();
+            Main.decayVisuals();
+            frame = frame + 1;
+            if (frame > 2047) {
+                frame = 0;
+            }
+        }
+    }
+}

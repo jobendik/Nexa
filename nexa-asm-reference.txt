@@ -1,0 +1,62 @@
+# NEXA ASM / NEXA-16 ISA - LLM REFERENCE
+ARCH: 16-bit RISC. 64Kx16 RAM. Hardware stack.
+REGS: A (0: Accumulator/Mem Base/Jump Target), D (1: Data), B (2: Gen/Temp), SP (3: Stack, grows DOWN).
+CTRL REGS: STATUS(0), EPC(1), CAUSE(2: IRQ/fault saves STATUS in high byte; TRAP stores imm12 directly), BASE(3), LIMIT(4), KSP(5).
+FLAGS: Z (Zero, STATUS[0]), N (Negative, STATUS[1]). Derived P = !N && !Z.
+
+CRITICAL GOTCHAS (STRICT COMPLIANCE REQUIRED):
+1. LOAD/STORE BASE IS ONLY 'A'. `LOAD D, [A+offset]` is valid. `LOAD D, [B]` is INVALID.
+2. JMP/CALL IGNORE LABELS. They always jump to address in A. MUST do: `LDA A, label` then `CALL`.
+3. LOAD, LDI, LDU, PUSH, POP DO NOT SET FLAGS. To branch after LOAD, force flag update via `OR reg, reg` or `TST reg`.
+4. .STRING stores 1 char per 16-bit word + 0x0000 terminator.
+5. `POP SP` is special: it loads SP from `mem[SP]` and does NOT increment afterward.
+
+BASE INSTRUCTIONS:
+LDI reg, imm10     ; Load 10-bit signed (-512 to 511). No flags.
+LDU reg, imm6      ; Replace top 6 bits [15:10]. No flags.
+ADD, SUB, AND, OR  ; `OP dst, src`. Sets N, Z.
+NOT, SHL, ASR      ; `OP dst`. Sets N, Z.
+MOV, XOR           ; `OP dst, src`. Sets N, Z.
+LOAD dst, [A±off8] ; Read mem[A±offset]. Offset range -128 to +127. NO FLAGS.
+STORE src, [A±off8]; Write mem[A±offset].
+BR{cond} label     ; cond: N, Z, P, NZ, NP, ZP, A/NZP. Offset 9-bit signed from PC+1.
+JMP                ; PC = A.
+CALL               ; Push PC, PC = A.
+RET                ; PC = mem[SP], then SP++.
+PUSH reg           ; SP--, mem[SP]=reg. No flags.
+POP reg            ; reg=mem[SP], then SP++. Special case: POP SP sets SP=mem[SP] without increment. No flags.
+TRAP imm12         ; PC->EPC, imm12 stored directly in CAUSE, KSP<->SP (if user), PC=8.
+SYS                ; HALT, IRET, RDCTL dst,creg, WRCTL creg,src (Kernel only).
+
+PSEUDO-INSTRUCTIONS (Expansions):
+LDA reg, val       ; (2 words) LDI low 10 bits, LDU top 6 bits.
+CMP r1, r2         ; (4 words) PUSH A; MOV A,r1; SUB A,r2; POP A. (3 words if r2=A). Sets flags.
+CLR reg            ; (1 word) LDI reg, 0.
+INC/DEC reg        ; (4 words) Uses B (or A) as temp, sets flags via ADD/SUB.
+NEG reg            ; (5 words) NOT reg; ADD reg, 1 (via temp).
+TST reg            ; (3 words) PUSH A; MOV A, reg; POP A. Sets flags. (Alternative: OR reg, reg works for any register).
+
+MEMORY MAP & VECTORS:
+0x0000: Reset   0x0004: IRQ   0x0008: TRAP   0x000C: Fault
+0x0010 - 0xEBFF: RAM (Set SP to 0xEBFF at boot).
+0xEC00 - 0xFEBF: Active VRAM (Framebuffer, 4800 words).
+0xFEC0 - 0xFEFF: Display-reserved gap.
+
+FRAMEBUFFER (0xEC00 base, 4800 words):
+- Text Mode (80x30): Word = `bg[15:12] | fg[11:8] | ascii[7:0]`.
+- Pixel Mode (160x120): Word = 4 pixels `p0[15:12] | p1[11:8] | p2[7:4] | p3[3:0]`.
+- CGA Palette: 0=Blk, 1=Blu, 2=Grn, 3=Cyn, 4=Red, 5=Mag, 6=Brn, 7=LtGry, 8=DkGry, 9=BrtBlu, A=BrtGrn, B=BrtCyn, C=BrtRed, D=BrtMag, E=Yel, F=Wht.
+
+I/O PORTS (Base addresses, use LOAD/STORE via A):
+FF00 KBD    : [0] Status (1=ready), [1] Data (ASCII, clears status). IRQ 1.
+FF10 TIMER  : [0] Ctrl (bit 0=en), [1] Interval, [2] Counter, [3] Millis Low, [4] Millis High. IRQ 0.
+FF20 UART   : [0] TX Stat, [1] TX Data, [2] RX Stat, [3] RX Data. IRQ 2(RX), 3(TX event after transmit).
+FF30 DISP   : [0] Mode (0=text, 1=pixel), [1] Cursor.
+FF40 SOUND  : Ch0: [0] Freq, [1] Ctrl(`wave[9:8]|vol[7:4]|en[3]`). Ch1: [2] Freq, [3] Ctrl. Ch2: [4] Freq, [5] Ctrl. Ch3 noise: [6] Rate, [7] Ctrl(`mode[9:8]|vol[7:4]|en[3]`).
+FF50 DISK   : [0] Cmd (1=rd, 2=wr), [1] Sector, [2] DMA Addr, [3] Status. IRQ 4.
+FFF0 SYS    : [0] IRQ Pending (write 1 to clear), [1] IRQ Mask.
+
+INTERRUPTS & CONVENTIONS:
+- Check CAUSE register for IRQ/Fault logic. Return via `IRET` after restoring `STATUS`.
+- Recommended Calling Conv: Args in D, B, or Stack. Return in D. Save clobbered regs.
+- Timer note: the monotonic millisecond clock at FF13/FF14 advances from executed emulated cycles. Polling it requires timer progression, but not enabled or delivered timer interrupts.

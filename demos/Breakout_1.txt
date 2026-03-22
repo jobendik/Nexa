@@ -1,0 +1,274 @@
+const DISPLAY_CTRL: int = 0xFF30;
+
+// -----------------------------------------------------------------
+// CLASS: Paddle
+// -----------------------------------------------------------------
+class Paddle {
+    field x: int;
+    field y: int;
+    field width: int;
+    field height: int;
+
+    new(startX: int, startY: int) {
+        this.x = startX;
+        this.y = startY;
+        this.width = 24;
+        this.height = 3;
+    }
+
+    method dispose() {
+        Memory.deAlloc(this);
+    }
+
+    method draw() {
+        Screen.setColor(15); // White
+        Screen.drawRectangle(this.x, this.y, this.x + this.width, this.y + this.height);
+    }
+
+    method erase() {
+        Screen.setColor(0); // Black background
+        Screen.drawRectangle(this.x, this.y, this.x + this.width, this.y + this.height);
+    }
+
+    method moveLeft() {
+        if (this.x > 0) {
+            this.erase();
+            this.x = this.x - 4;
+            this.draw();
+        }
+    }
+
+    method moveRight() {
+        if ((this.x + this.width) < 159) {
+            this.erase();
+            this.x = this.x + 4;
+            this.draw();
+        }
+    }
+
+    method getX() -> int { return this.x; }
+    method getY() -> int { return this.y; }
+    method getWidth() -> int { return this.width; }
+}
+
+// -----------------------------------------------------------------
+// CLASS: Ball
+// -----------------------------------------------------------------
+class Ball {
+    field x: int;
+    field y: int;
+    field r: int;
+    field dx: int;
+    field dy: int;
+
+    new(startX: int, startY: int) {
+        this.x = startX;
+        this.y = startY;
+        this.r = 2;
+        this.dx = 2;
+        this.dy = -2;
+    }
+
+    method dispose() {
+        Memory.deAlloc(this);
+    }
+
+    method draw() {
+        Screen.setColor(10); // Light Green
+        Screen.drawCircle(this.x, this.y, this.r);
+    }
+
+    method erase() {
+        Screen.setColor(0);
+        Screen.drawCircle(this.x, this.y, this.r);
+    }
+
+    method move() {
+        this.erase();
+        this.x = this.x + this.dx;
+        this.y = this.y + this.dy;
+
+        // Wall collisions (Left & Right)
+        if (this.x < 3) {
+            this.x = 3;
+            this.dx = -this.dx;
+        } else if (this.x > 156) {
+            this.x = 156;
+            this.dx = -this.dx;
+        }
+
+        // Ceiling collision
+        if (this.y < 3) {
+            this.y = 3;
+            this.dy = -this.dy;
+        }
+
+        this.draw();
+    }
+
+    method bounceY() {
+        this.dy = -this.dy;
+    }
+
+    method getX() -> int { return this.x; }
+    method getY() -> int { return this.y; }
+    method getDy() -> int { return this.dy; }
+}
+
+// -----------------------------------------------------------------
+// CLASS: Game (Main Logic)
+// -----------------------------------------------------------------
+class Game {
+    field paddle: Paddle;
+    field ball: Ball;
+    field bricks: Array;
+    field activeBricks: int;
+    field gameOver: bool;
+
+    new() {
+        // Center the paddle (160/2 - 12 = 68)
+        this.paddle = Paddle.new(68, 110); 
+        this.ball = Ball.new(80, 100);
+        
+        // 4 rows of 10 bricks = 40 bricks
+        this.bricks = Array.new(40);
+        this.activeBricks = 40;
+        this.gameOver = false;
+        
+        var i: int = 0;
+        while (i < 40) {
+            this.bricks[i] = true;
+            i = i + 1;
+        }
+    }
+
+    method dispose() {
+        this.paddle.dispose();
+        this.ball.dispose();
+        this.bricks.dispose();
+        Memory.deAlloc(this);
+    }
+
+    method drawBricks() {
+        var i: int = 0;
+        var row: int = 0;
+        var col: int = 0;
+        var bx: int = 0;
+        var by: int = 0;
+
+        while (i < 40) {
+            if (this.bricks[i] != false) { 
+                row = i / 10;
+                col = i % 10;
+                bx = col * 16 + 1;
+                by = row * 6 + 10; // Start drawing at Y = 10
+                
+                Screen.setColor((row % 4) + 2); // Colors 2, 3, 4, 5
+                Screen.drawRectangle(bx, by, bx + 14, by + 4);
+            }
+            i = i + 1;
+        }
+    }
+
+    method checkCollisions() {
+        var bx: int = this.ball.getX();
+        var by: int = this.ball.getY();
+        var px: int = this.paddle.getX();
+        var py: int = this.paddle.getY();
+        var pw: int = this.paddle.getWidth();
+
+        // 1. Paddle Collision
+        // Only bounce if the ball is falling downward to prevent getting "stuck"
+        if ((this.ball.getDy() > 0) && (by > (py - 3)) && (by < (py + 3))) {
+            if ((bx >= px) && (bx <= (px + pw))) {
+                this.ball.bounceY();
+                this.ball.move(); // Immediate move out to clear collision bound
+            }
+        }
+
+        // 2. Bottom out (Loss condition)
+        if (by > 118) {
+            this.gameOver = true;
+        }
+
+        // 3. Brick Collision
+        // Fast bounding-box check before performing division
+        if ((by >= 10) && (by < 34)) {
+            var hitRow: int = (by - 10) / 6;
+            var hitCol: int = bx / 16;
+            
+            if ((hitRow >= 0) && (hitRow < 4) && (hitCol >= 0) && (hitCol < 10)) {
+                var index: int = (hitRow * 10) + hitCol;
+                
+                if (this.bricks[index] != false) {
+                    this.bricks[index] = false;
+                    this.ball.bounceY();
+                    this.activeBricks = this.activeBricks - 1;
+                    
+                    // Erase the specific brick visually
+                    var brickX: int = hitCol * 16 + 1;
+                    var brickY: int = hitRow * 6 + 10;
+                    Screen.setColor(0);
+                    Screen.drawRectangle(brickX, brickY, brickX + 14, brickY + 4);
+                    
+                    if (this.activeBricks == 0) {
+                        this.gameOver = true;
+                    }
+                }
+            }
+        }
+    }
+
+    method run() {
+        poke(DISPLAY_CTRL, 1); // Enable Pixel Mode
+        FrameClock.init(33);
+        Screen.clearScreen();
+        
+        this.paddle.draw();
+        this.ball.draw();
+        this.drawBricks();
+
+        // Main Game Loop
+        while (!this.gameOver) {
+            var key: int = Keyboard.keyPressed();
+
+            if ((key == 'a') || (key == 'A') || (key == 130)) {
+                this.paddle.moveLeft();
+            }
+            if ((key == 'd') || (key == 'D') || (key == 132)) {
+                this.paddle.moveRight();
+            }
+
+            this.ball.move();
+            this.checkCollisions();
+            
+            FrameClock.waitNextFrame();
+        }
+        
+        // Transition to End Screen
+        poke(DISPLAY_CTRL, 0); // Text mode
+        Screen.clearScreen();
+        Output.moveCursor(15, 35);
+        
+        var msg: String = "GAME OVER";
+        Output.printString(msg);
+        msg.dispose();
+        
+        if (this.activeBricks == 0) {
+            var winMsg: String = "YOU WIN!";
+            Output.moveCursor(17, 36);
+            Output.printString(winMsg);
+            winMsg.dispose();
+        }
+    }
+}
+
+// -----------------------------------------------------------------
+// ENTRY POINT
+// -----------------------------------------------------------------
+fn main() {
+    var game: Game = Game.new();
+    game.run();
+    game.dispose();
+    halt();
+}

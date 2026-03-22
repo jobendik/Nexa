@@ -1,0 +1,437 @@
+// ============================================================
+// NEXA-16 NEXA SOUNDTRACK STRESS TEST — "QUAD PHASE"
+//
+// Exercises the full sound system:
+// - 3 tone channels plus 1 noise channel
+// - all documented tone waveforms (0=square, 1=triangle, 2=sawtooth, 3=sawtooth)
+// - all four noise modes
+// - frequent stop/start retriggers and different gate lengths
+//
+// Visuals: four animated rails in 160x120 pixel mode.
+// ============================================================
+
+class Main {
+
+    static level0: int;
+    static level1: int;
+    static level2: int;
+    static level3: int;
+
+    static gate0: int;
+    static gate1: int;
+    static gate2: int;
+    static gate3: int;
+
+    static drumRate: int;
+    static drumMode: int;
+    static drumVol: int;
+
+    static prevX0: int;
+    static prevY0: int;
+    static prevW0: int;
+    static prevX1: int;
+    static prevY1: int;
+    static prevW1: int;
+    static prevX2: int;
+    static prevY2: int;
+    static prevW2: int;
+    static prevX3: int;
+    static prevY3: int;
+    static prevW3: int;
+
+    fn wordFor(c: int) -> int {
+        if (c == 0) { return 0; }
+        if (c == 8) { return -30584; }
+        if (c == 9) { return -26215; }
+        if (c == 10) { return -21846; }
+        if (c == 11) { return -17477; }
+        if (c == 12) { return -13108; }
+        if (c == 14) { return -4370; }
+        return -1;
+    }
+
+    fn fillWord(wx: int, y: int, c: int) {
+        var addr: int;
+        var row: int;
+        addr = -5120;
+        row = 0;
+        while (row < y) {
+            addr = addr + 40;
+            row = row + 1;
+        }
+        poke((addr + wx), Main.wordFor(c));
+    }
+
+    fn clearScreen() {
+        var addr: int;
+        addr = -5120;
+        while (addr < -320) {
+            poke(addr, 0);
+            addr = addr + 1;
+        }
+    }
+
+    fn drawRail(y: int) {
+        var wx: int;
+        wx = 0;
+        while (wx < 40) {
+            Main.fillWord(wx, y, 8);
+            wx = wx + 1;
+        }
+    }
+
+    fn drawRails() {
+        Main.drawRail(16);
+        Main.drawRail(42);
+        Main.drawRail(68);
+        Main.drawRail(94);
+    }
+
+    fn drawSpan(x0: int, width: int, y: int, c: int) {
+        var i: int;
+        var wx: int;
+        i = 0;
+        while (i < width) {
+            wx = (x0 + i);
+            if (wx > 39) {
+                wx = wx - 40;
+            }
+            Main.fillWord(wx, y, c);
+            i = i + 1;
+        }
+    }
+
+    fn erasePulse(x0: int, y0: int, width: int, base: int) {
+        Main.drawSpan(x0, width, (y0 - 1), 0);
+        Main.drawSpan(x0, width, (y0 + 1), 0);
+        if (y0 == base) {
+            Main.drawSpan(x0, width, y0, 8);
+        } else {
+            Main.drawSpan(x0, width, y0, 0);
+            Main.drawSpan(x0, width, base, 8);
+        }
+    }
+
+    fn wobble(frame: int, speed: int, amp: int) -> int {
+        var phase: int;
+        phase = ((frame * speed) & 31);
+        if (phase > 15) {
+            phase = (31 - phase);
+        }
+        return (((phase - 8) * amp) >> 3);
+    }
+
+    fn drawPulse(x0: int, width: int, y: int, c: int, energy: int) {
+        Main.drawSpan(x0, width, y, c);
+        if (energy > 3) {
+            Main.drawSpan(x0, width, (y - 1), c);
+            Main.drawSpan(x0, width, (y + 1), c);
+        }
+        Main.drawSpan((x0 + (width >> 1)), 1, y, 15);
+    }
+
+    fn drawChannel(frame: int, baseY: int, color: int, energy: int, speed: int, sway: int, prevX: int, prevY: int, prevW: int) {
+        var width: int;
+        var x0: int;
+        var y: int;
+        width = (4 + (energy >> 2));
+        if (width > 10) { width = 10; }
+        x0 = Math.modulo((frame * speed), 40);
+        y = (baseY + Main.wobble(frame, sway, (2 + energy)));
+        Main.erasePulse(prevX, prevY, prevW, baseY);
+        Main.drawPulse(x0, width, y, color, energy);
+        if (baseY == 16) {
+            prevX0 = x0; prevY0 = y; prevW0 = width;
+        } else {
+            if (baseY == 42) {
+                prevX1 = x0; prevY1 = y; prevW1 = width;
+            } else {
+                if (baseY == 68) {
+                    prevX2 = x0; prevY2 = y; prevW2 = width;
+                } else {
+                    prevX3 = x0; prevY3 = y; prevW3 = width;
+                }
+            }
+        }
+    }
+
+    fn drawFrame(frame: int) {
+        Main.drawChannel(frame, 16, 11, level0, 5, 4, prevX0, prevY0, prevW0);
+        Main.drawChannel(frame, 42, 14, level1, 7, 5, prevX1, prevY1, prevW1);
+        Main.drawChannel(frame, 68, 10, level2, 9, 7, prevX2, prevY2, prevW2);
+        Main.drawChannel(frame, 94, 12, level3, 11, 9, prevX3, prevY3, prevW3);
+    }
+
+    fn chordRootLow(chord: int) -> int {
+        if (chord == 0) { return 7644; }
+        if (chord == 1) { return 4545; }
+        if (chord == 2) { return 5726; }
+        return 5102;
+    }
+
+    fn chordFifthLow(chord: int) -> int {
+        if (chord == 0) { return 5102; }
+        if (chord == 1) { return 6070; }
+        if (chord == 2) { return 7644; }
+        return 6806;
+    }
+
+    fn chordRootMid(chord: int) -> int {
+        if (chord == 0) { return 3822; }
+        if (chord == 1) { return 2273; }
+        if (chord == 2) { return 2863; }
+        return 2551;
+    }
+
+    fn chordThirdMid(chord: int) -> int {
+        if (chord == 0) { return 3034; }
+        if (chord == 1) { return 3822; }
+        if (chord == 2) { return 2273; }
+        return 2025;
+    }
+
+    fn chordFifthMid(chord: int) -> int {
+        if (chord == 0) { return 2551; }
+        if (chord == 1) { return 3034; }
+        if (chord == 2) { return 3822; }
+        return 3405;
+    }
+
+    fn chordLeadHigh(chord: int) -> int {
+        if (chord == 0) { return 1911; }
+        if (chord == 1) { return 2273; }
+        if (chord == 2) { return 1432; }
+        return 1276;
+    }
+
+    fn chordPassing(chord: int) -> int {
+        if (chord == 0) { return 1703; }
+        if (chord == 1) { return 2551; }
+        if (chord == 2) { return 1703; }
+        return 1517;
+    }
+
+    fn leadNote(chord: int, step: int, section: int) -> int {
+        if (step == 0) { return 0; }
+        if (step == 1) { return chordThirdMid(chord); }
+        if (step == 2) { return chordFifthMid(chord); }
+        if (step == 3) { return chordLeadHigh(chord); }
+        if (step == 4) { return chordFifthMid(chord); }
+        if (step == 5) { return chordThirdMid(chord); }
+        if (step == 6) { return chordPassing(chord); }
+        if (step == 7) { return 0; }
+        if (step == 8) { return chordThirdMid(chord); }
+        if (step == 9) { return chordFifthMid(chord); }
+        if (step == 10) { return chordLeadHigh(chord); }
+        if (step == 11) { return chordFifthMid(chord); }
+        if (step == 12) { return chordThirdMid(chord); }
+        if (step == 13) { return chordPassing(chord); }
+        if (step == 14) { return chordRootMid(chord); }
+        return 0;
+    }
+
+    fn bassNote(chord: int, step: int) -> int {
+        if (step == 0) { return chordRootLow(chord); }
+        if (step == 1) { return 0; }
+        if (step == 2) { return chordFifthLow(chord); }
+        if (step == 3) { return chordRootMid(chord); }
+        if (step == 4) { return chordRootLow(chord); }
+        if (step == 5) { return 0; }
+        if (step == 6) { return chordFifthLow(chord); }
+        return chordThirdMid(chord);
+    }
+
+    fn arpNote(chord: int, step: int) -> int {
+        if (step == 0) { return chordRootMid(chord); }
+        if (step == 1) { return chordThirdMid(chord); }
+        if (step == 2) { return chordFifthMid(chord); }
+        if (step == 3) { return chordThirdMid(chord); }
+        if (step == 4) { return chordLeadHigh(chord); }
+        if (step == 5) { return chordFifthMid(chord); }
+        if (step == 6) { return chordThirdMid(chord); }
+        return chordFifthMid(chord);
+    }
+
+    fn beatKind(step: int, section: int) -> int {
+        if (step == 0) { return 1; }
+        if (step == 1) { return 0; }
+        if (step == 2) { return 3; }
+        if (step == 3) { return 0; }
+        if (step == 4) { return 1; }
+        if (step == 5) { return 0; }
+        if (step == 6) { return 2; }
+        if (section == 3) { return 4; }
+        return 0;
+    }
+
+    fn playTone(ch: int, period: int, volume: int, waveform: int, gate: int, energy: int) {
+        if (period < 1) {
+            Sound.stopVoice(ch);
+            if (ch == 0) {
+                gate0 = 0;
+                level0 = 0;
+            } else {
+                if (ch == 1) {
+                    gate1 = 0;
+                    level1 = 0;
+                } else {
+                    gate2 = 0;
+                    level2 = 0;
+                }
+            }
+            return;
+        }
+        Sound.setVoice(ch, period, volume, waveform);
+        if (ch == 0) {
+            gate0 = gate;
+            level0 = energy;
+        } else {
+            if (ch == 1) {
+                gate1 = gate;
+                level1 = energy;
+            } else {
+                gate2 = gate;
+                level2 = energy;
+            }
+        }
+    }
+
+    fn triggerNoise(kind: int) {
+        if (kind == 1) {
+            drumRate = 980; drumMode = 0; drumVol = 8; gate3 = 3; level3 = 12;
+        } else {
+            if (kind == 2) {
+                drumRate = 300; drumMode = 2; drumVol = 7; gate3 = 3; level3 = 11;
+            } else {
+                if (kind == 3) {
+                    drumRate = 200; drumMode = 1; drumVol = 3; gate3 = 2; level3 = 6;
+                } else {
+                    if (kind == 4) {
+                        drumRate = 180; drumMode = 3; drumVol = 5; gate3 = 3; level3 = 9;
+                    } else {
+                        return;
+                    }
+                }
+            }
+        }
+        Sound.setVoice(3, drumRate, drumVol, drumMode);
+    }
+
+    fn tickGates() {
+        if (gate0 > 0) {
+            gate0 = gate0 - 1;
+            if (gate0 == 0) { Sound.stopVoice(0); }
+        }
+        if (gate1 > 0) {
+            gate1 = gate1 - 1;
+            if (gate1 == 0) { Sound.stopVoice(1); }
+        }
+        if (gate2 > 0) {
+            gate2 = gate2 - 1;
+            if (gate2 == 0) { Sound.stopVoice(2); }
+        }
+        if (gate3 > 0) {
+            gate3 = gate3 - 1;
+            if (gate3 == 2) {
+                Sound.setVoice(3, (drumRate + 24), (drumVol - 2), drumMode);
+            } else {
+                if (gate3 == 1) {
+                    Sound.setVoice(3, (drumRate + 40), (drumVol - 3), drumMode);
+                } else {
+                    if (gate3 == 0) { Sound.stopVoice(3); }
+                }
+            }
+        }
+    }
+
+    fn decayLevels() {
+        if (level0 > 0) { level0 = level0 - 1; }
+        if (level1 > 0) { level1 = level1 - 1; }
+        if (level2 > 0) { level2 = level2 - 1; }
+        if (level3 > 0) { level3 = level3 - 1; }
+    }
+
+    fn updateMusic(frame: int) {
+        var stage: int;
+        var section: int;
+        var chord: int;
+        var leadStep: int;
+        var bassStep: int;
+        var arpStep: int;
+        var beatStep: int;
+        var leadWave: int;
+        var bassWave: int;
+        var arpWave: int;
+
+        Main.tickGates();
+        section = ((frame >> 8) & 3);
+        chord = ((frame >> 6) & 3);
+        stage = 0;
+        if (frame >= 256) { stage = 1; }
+        if (frame >= 512) { stage = 2; }
+        if (frame >= 768) { stage = 3; }
+
+        leadWave = 0;
+        bassWave = 2;
+        arpWave = 1;
+        if (stage == 3) {
+            arpWave = 2;
+        }
+
+        if ((frame & 7) == 0) {
+            bassStep = ((frame >> 3) & 7);
+            Main.playTone(1, Main.bassNote(chord, bassStep), 8, bassWave, 7, 10);
+        }
+
+        if ((frame & 7) == 0) {
+            leadStep = ((frame >> 3) & 15);
+            beatStep = (leadStep & 7);
+            if (stage >= 1) {
+                Main.triggerNoise(Main.beatKind(beatStep, section));
+            }
+            if (stage >= 2) {
+                Main.playTone(0, Main.leadNote(chord, leadStep, section), 10, leadWave, 5, 12);
+            }
+        }
+
+        if ((stage == 3) & ((frame & 7) == 4)) {
+            arpStep = ((frame >> 2) & 7);
+            Main.playTone(2, Main.arpNote(chord, arpStep), 4, arpWave, 3, 6);
+        }
+    }
+
+    fn initState() {
+        level0 = 0; level1 = 0; level2 = 0; level3 = 0;
+        gate0 = 0; gate1 = 0; gate2 = 0; gate3 = 0;
+        drumRate = 0; drumMode = 0; drumVol = 0;
+
+        prevX0 = 0; prevY0 = 16; prevW0 = 6;
+        prevX1 = 0; prevY1 = 42; prevW1 = 6;
+        prevX2 = 0; prevY2 = 68; prevW2 = 6;
+        prevX3 = 0; prevY3 = 94; prevW3 = 6;
+    }
+
+    fn main() {
+        var frame: int;
+
+        poke(0xFF30, 1);
+        Main.initState();
+        Sound.silence();
+        Main.clearScreen();
+        Main.drawRails();
+        FrameClock.init(60);
+
+        frame = 0;
+        loop {
+            Main.updateMusic(frame);
+            Main.drawFrame(frame);
+            Main.decayLevels();
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+            if (frame > 1023) {
+                frame = 0;
+                Sound.silence();
+            }
+        }
+    }
+}

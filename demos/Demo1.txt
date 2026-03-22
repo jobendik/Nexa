@@ -1,0 +1,526 @@
+// NEXA DEMOSCENE FOR NEXA-16
+// 6 scenes:
+// 1) Text-mode intro
+// 2) Raster bars
+// 3) Starfield
+// 4) Tunnel rings
+// 5) Bouncing balls network
+// 6) Text-mode finale
+
+const TEXT_BASE: int = 0xEC00;
+const MODE_REG: int = 0xFF30;
+
+const SCREEN_W: int = 160;
+const SCREEN_H: int = 120;
+const CENTER_X: int = 80;
+const CENTER_Y: int = 60;
+
+// ------------------------------------------------------------
+// Low-level helpers
+// ------------------------------------------------------------
+
+fn textCell(bg: int, fg: int, ch: int) -> int {
+    return Math.shiftLeft(bg, 12) | Math.shiftLeft(fg, 8) | ch;
+}
+
+fn putCell(row: int, col: int, fg: int, bg: int, ch: int) {
+    poke(TEXT_BASE + Math.multiply(row, 80) + col, textCell(bg, fg, ch));
+}
+
+fn setTextMode() {
+    poke(MODE_REG, 0);
+    Screen.clearScreen();
+}
+
+fn setPixelMode() {
+    poke(MODE_REG, 1);
+    Screen.clearScreen();
+}
+
+fn clampX(x: int) -> int {
+    if (x < 0) {
+        return 0;
+    }
+    if (x > 159) {
+        return 159;
+    }
+    return x;
+}
+
+fn clampY(y: int) -> int {
+    if (y < 0) {
+        return 0;
+    }
+    if (y > 119) {
+        return 119;
+    }
+    return y;
+}
+
+fn abs16(x: int) -> int {
+    if (x < 0) {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn drawTextBorder(color: int) {
+    var x: int = 0;
+    var y: int = 1;
+
+    while (x < 80) {
+        putCell(0, x, color, 0, '=');
+        putCell(29, x, color, 0, '=');
+        x = x + 1;
+    }
+
+    while (y < 29) {
+        putCell(y, 0, color, 0, '|');
+        putCell(y, 79, color, 0, '|');
+        y = y + 1;
+    }
+
+    putCell(0, 0, color, 0, '+');
+    putCell(0, 79, color, 0, '+');
+    putCell(29, 0, color, 0, '+');
+    putCell(29, 79, color, 0, '+');
+}
+
+fn drawIntroTitle(base: int) {
+    // "NEON OVERDRIVE"
+    putCell(8, 26, (base + 0) & 15, 0, 'N');
+    putCell(8, 27, (base + 1) & 15, 0, 'E');
+    putCell(8, 28, (base + 2) & 15, 0, 'O');
+    putCell(8, 29, (base + 3) & 15, 0, 'N');
+    putCell(8, 30, 15, 0, ' ');
+    putCell(8, 31, (base + 4) & 15, 0, 'O');
+    putCell(8, 32, (base + 5) & 15, 0, 'V');
+    putCell(8, 33, (base + 6) & 15, 0, 'E');
+    putCell(8, 34, (base + 7) & 15, 0, 'R');
+    putCell(8, 35, (base + 8) & 15, 0, 'D');
+    putCell(8, 36, (base + 9) & 15, 0, 'R');
+    putCell(8, 37, (base + 10) & 15, 0, 'I');
+    putCell(8, 38, (base + 11) & 15, 0, 'V');
+    putCell(8, 39, (base + 12) & 15, 0, 'E');
+
+    // "NEXA"
+    putCell(10, 36, (base + 6) & 15, 0, 'J');
+    putCell(10, 37, (base + 7) & 15, 0, 'A');
+    putCell(10, 38, (base + 8) & 15, 0, 'C');
+    putCell(10, 39, (base + 9) & 15, 0, 'K');
+    putCell(10, 40, 15, 0, '+');
+    putCell(10, 41, 15, 0, '+');
+}
+
+fn drawFinalTitle(base: int) {
+    // "NEXA-16 FOREVER"
+    putCell(8, 29, (base + 0) & 15, 0, 'H');
+    putCell(8, 30, (base + 1) & 15, 0, 'A');
+    putCell(8, 31, (base + 2) & 15, 0, 'C');
+    putCell(8, 32, (base + 3) & 15, 0, 'K');
+    putCell(8, 33, 15, 0, '+');
+    putCell(8, 34, 15, 0, ' ');
+    putCell(8, 35, (base + 4) & 15, 0, 'F');
+    putCell(8, 36, (base + 5) & 15, 0, 'O');
+    putCell(8, 37, (base + 6) & 15, 0, 'R');
+    putCell(8, 38, (base + 7) & 15, 0, 'E');
+    putCell(8, 39, (base + 8) & 15, 0, 'V');
+    putCell(8, 40, (base + 9) & 15, 0, 'E');
+    putCell(8, 41, (base + 10) & 15, 0, 'R');
+}
+
+// ------------------------------------------------------------
+// Scene 1: text-mode intro
+// ------------------------------------------------------------
+
+fn sceneIntro() {
+    var f: int = 0;
+    var s1: String = "AN EIGHTIES STYLE SHOWPIECE";
+    var s2: String = "TEXT MODE  PIXEL MODE  ALL 16-BIT";
+    var s3: String = "NO FLOATS. NO MERCY. JUST DEMO.";
+    var s4: String = "SCENES: RASTERS / STARS / TUNNEL / BALLS";
+
+    setTextMode();
+    FrameClock.init(14);
+
+    while (f < 26) {
+        Screen.clearScreen();
+        drawTextBorder((f + 2) & 15);
+        drawIntroTitle((f + 5) & 15);
+
+        Output.moveCursor(14, 24);
+        Output.printString(s1);
+
+        Output.moveCursor(17, 22);
+        Output.printString(s2);
+
+        Output.moveCursor(19, 23);
+        Output.printString(s3);
+
+        Output.moveCursor(23, 18);
+        Output.printString(s4);
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+
+    s1.dispose();
+    s2.dispose();
+    s3.dispose();
+    s4.dispose();
+}
+
+// ------------------------------------------------------------
+// Scene 2: raster bars and diagonal beams
+// ------------------------------------------------------------
+
+fn sceneRasters() {
+    var f: int = 0;
+    var y: int;
+    var color: int;
+    var offset: int;
+    var y1: int;
+    var y2: int;
+    var band: int;
+
+    setPixelMode();
+    FrameClock.init(29);
+
+    while (f < 52) {
+        Screen.clearScreen();
+
+        y = 0;
+        while (y < SCREEN_H) {
+            color = (Math.divide(y, 4) + f) & 15;
+            offset = ((y + f + f + f) & 15) - 8;
+
+            y1 = clampY(y + offset);
+            y2 = clampY(y - offset);
+
+            Screen.setColor(color);
+            Screen.drawLine(0, y1, 159, y2);
+
+            y = y + 3;
+        }
+
+        band = (f + f) & 31;
+        Screen.setColor((f + 8) & 15);
+        Screen.drawRectangle(12 + band, 18, 147 - band, 101);
+
+        Screen.setColor((f + 12) & 15);
+        Screen.drawLine(0, clampY(60 + ((f & 15) - 8)), 159, clampY(60 - ((f & 15) - 8)));
+        Screen.drawLine(0, clampY(30 + (((f + 5) & 15) - 8)), 159, clampY(90 - (((f + 5) & 15) - 8)));
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+}
+
+// ------------------------------------------------------------
+// Scene 3: starfield
+// ------------------------------------------------------------
+
+fn seedStar(xs: Array, ys: Array, zs: Array, i: int, phase: int) {
+    xs[i] = Math.modulo(Math.multiply(i, 37) + Math.multiply(phase, 11), 160) - 80;
+    ys[i] = Math.modulo(Math.multiply(i, 53) + Math.multiply(phase, 7), 120) - 60;
+    zs[i] = Math.modulo(Math.multiply(i, 19) + Math.multiply(phase, 13), 64) + 16;
+}
+
+fn sceneStarfield() {
+    var count: int = 42;
+    var xs: Array = Array.new(count);
+    var ys: Array = Array.new(count);
+    var zs: Array = Array.new(count);
+
+    var i: int = 0;
+    var f: int = 0;
+
+    var z: int;
+    var sx: int;
+    var sy: int;
+    var color: int;
+    var speed: int;
+
+    while (i < count) {
+        seedStar(xs, ys, zs, i, 1);
+        i = i + 1;
+    }
+
+    setPixelMode();
+    FrameClock.init(36);
+
+    while (f < 68) {
+        Screen.clearScreen();
+
+        Screen.setColor(15);
+        Screen.drawPixel(CENTER_X, CENTER_Y);
+        Screen.drawPixel(CENTER_X - 1, CENTER_Y);
+        Screen.drawPixel(CENTER_X + 1, CENTER_Y);
+        Screen.drawPixel(CENTER_X, CENTER_Y - 1);
+        Screen.drawPixel(CENTER_X, CENTER_Y + 1);
+
+        i = 0;
+        while (i < count) {
+            speed = 1 + (i & 3);
+            z = zs[i] - speed;
+
+            if (z <= 2) {
+                seedStar(xs, ys, zs, i, f + i + 9);
+                z = zs[i];
+            } else {
+                zs[i] = z;
+            }
+
+            sx = CENTER_X + Math.divide(Math.multiply(xs[i], 64), z);
+            sy = CENTER_Y + Math.divide(Math.multiply(ys[i], 64), z);
+
+            if ((sx > 1) && (sx < 159) && (sy > 1) && (sy < 119)) {
+                color = 15 - Math.divide(z, 5);
+                if (color < 1) {
+                    color = 1;
+                }
+
+                Screen.setColor(color);
+                Screen.drawPixel(sx, sy);
+
+                if (z < 18) {
+                    Screen.drawPixel(clampX(sx + 1), sy);
+                    Screen.drawLine(CENTER_X, CENTER_Y, sx, sy);
+                }
+            }
+
+            i = i + 1;
+        }
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+
+    xs.dispose();
+    ys.dispose();
+    zs.dispose();
+}
+
+// ------------------------------------------------------------
+// Scene 4: tunnel rings
+// ------------------------------------------------------------
+fn sceneTunnel() {
+    var f: int = 0;
+    var ring: int;
+    var cx: int;
+    var cy: int;
+    var color: int;
+    var half: int;
+
+    setPixelMode();
+    FrameClock.init(29);
+
+    while (f < 52) {
+        Screen.clearScreen();
+
+        ring = 58;
+        while (ring > 4) {
+            cx = CENTER_X + ((f + ring) & 15) - 8;
+            cy = CENTER_Y + ((f + f + Math.divide(ring, 2)) & 15) - 8;
+            color = (Math.divide(ring, 4) + f) & 15;
+            half = Math.divide(ring, 2);
+
+            Screen.setColor(color);
+
+            if ((ring & 4) == 0) {
+                Screen.drawCircle(cx, cy, ring);
+                if (ring > 10) {
+                    Screen.drawCircle(cx, cy, ring - 1);
+                }
+            } else {
+                Screen.drawRectangle(clampX(cx - ring), clampY(cy - half), clampX(cx + ring), clampY(cy + half));
+            }
+
+            ring = ring - 6;
+        }
+
+        Screen.setColor((f + 10) & 15);
+        Screen.drawLine(0, CENTER_Y, 159, CENTER_Y);
+        Screen.drawLine(CENTER_X, 0, CENTER_X, 119);
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+}
+
+// ------------------------------------------------------------
+// Scene 5: bouncing balls with connection lines
+// ------------------------------------------------------------
+
+fn sceneBalls() {
+    var count: int = 6;
+    var bx: Array = Array.new(count);
+    var by: Array = Array.new(count);
+    var dx: Array = Array.new(count);
+    var dy: Array = Array.new(count);
+    var bc: Array = Array.new(count);
+
+    var i: int = 0;
+    var j: int;
+    var f: int = 0;
+
+    var x: int;
+    var y: int;
+    var vx: int;
+    var vy: int;
+    var md: int;
+    var radius: int;
+
+    while (i < count) {
+        bx[i] = 18 + Math.modulo(Math.multiply(i, 23), 110);
+        by[i] = 14 + Math.modulo(Math.multiply(i, 17), 80);
+
+        dx[i] = 1 + (i & 3);
+        dy[i] = 1 + ((i + 1) & 3);
+
+        if ((i & 1) == 0) {
+            dx[i] = 0 - dx[i];
+        }
+        if ((i & 2) == 0) {
+            dy[i] = 0 - dy[i];
+        }
+
+        bc[i] = 2 + Math.modulo(Math.multiply(i, 3), 13);
+        i = i + 1;
+    }
+
+    setPixelMode();
+    FrameClock.init(33);
+
+    while (f < 82) {
+        Screen.clearScreen();
+
+        i = 0;
+        while (i < count) {
+            x = bx[i] + dx[i];
+            y = by[i] + dy[i];
+            vx = dx[i];
+            vy = dy[i];
+
+            if (x <= 6) {
+                x = 6;
+                vx = abs16(vx);
+            }
+            if (x >= 153) {
+                x = 153;
+                vx = 0 - abs16(vx);
+            }
+            if (y <= 6) {
+                y = 6;
+                vy = abs16(vy);
+            }
+            if (y >= 113) {
+                y = 113;
+                vy = 0 - abs16(vy);
+            }
+
+            bx[i] = x;
+            by[i] = y;
+            dx[i] = vx;
+            dy[i] = vy;
+
+            i = i + 1;
+        }
+
+        i = 0;
+        while (i < count) {
+            j = i + 1;
+            while (j < count) {
+                md = abs16(bx[i] - bx[j]) + abs16(by[i] - by[j]);
+
+                if (md < 72) {
+                    Screen.setColor((bc[i] + bc[j] + f) & 15);
+                    Screen.drawLine(bx[i], by[i], bx[j], by[j]);
+                }
+
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        i = 0;
+        while (i < count) {
+            radius = 4 + (i & 3);
+            Screen.setColor((bc[i] + f) & 15);
+            Screen.drawCircle(bx[i], by[i], radius);
+            Screen.drawPixel(bx[i], by[i]);
+            i = i + 1;
+        }
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+
+    bx.dispose();
+    by.dispose();
+    dx.dispose();
+    dy.dispose();
+    bc.dispose();
+}
+
+// ------------------------------------------------------------
+// Scene 6: finale
+// ------------------------------------------------------------
+
+fn sceneFinale() {
+    var f: int = 0;
+    var x: int;
+    var s1: String = "A NEXA DEMOSCENE FOR NEXA-16";
+    var s2: String = "TEXT  RASTERS  STARS  TUNNEL  BALLS";
+    var s3: String = "ALL VALUES ARE 16-BIT WORDS";
+    var s4: String = "END OF TRANSMISSION";
+
+    setTextMode();
+    FrameClock.init(14);
+
+    while (f < 34) {
+        Screen.clearScreen();
+        drawTextBorder((15 - f) & 15);
+        drawFinalTitle((f + 3) & 15);
+
+        Output.moveCursor(13, 24);
+        Output.printString(s1);
+
+        Output.moveCursor(16, 20);
+        Output.printString(s2);
+
+        Output.moveCursor(19, 25);
+        Output.printString(s3);
+
+        Output.moveCursor(24, 30);
+        Output.printString(s4);
+
+        x = 12;
+        while (x < 68) {
+            putCell(26, x, (x + f) & 15, 0, '*');
+            x = x + 1;
+        }
+
+        FrameClock.waitNextFrame();
+        f = f + 1;
+    }
+
+    s1.dispose();
+    s2.dispose();
+    s3.dispose();
+    s4.dispose();
+}
+
+// ------------------------------------------------------------
+// Entry point
+// ------------------------------------------------------------
+
+fn main() {
+    sceneIntro();
+    sceneRasters();
+    sceneStarfield();
+    sceneTunnel();
+    sceneBalls();
+    sceneFinale();
+    halt();
+}

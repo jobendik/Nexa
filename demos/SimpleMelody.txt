@@ -1,0 +1,80 @@
+// ============================================================
+// NEXA-16 NEXA SIMPLE MELODY TEST
+//
+// Purpose:
+// - isolate the sound path to a single tone channel
+// - play an obvious stepped melody with gaps between notes
+// - make browser vs offline WAV comparison straightforward
+// ============================================================
+
+class Main {
+
+    static gate0: int;
+
+    fn noteAt(step: int) -> int {
+        if (step == 0) { return 3034; }
+        if (step == 1) { return 2703; }
+        if (step == 2) { return 2273; }
+        if (step == 3) { return 2025; }
+        if (step == 4) { return 1911; }
+        if (step == 5) { return 2025; }
+        if (step == 6) { return 2273; }
+        if (step == 7) { return 2703; }
+        if (step == 8) { return 3034; }
+        if (step == 9) { return 3034; }
+        if (step == 10) { return 2273; }
+        if (step == 11) { return 2273; }
+        if (step == 12) { return 1911; }
+        if (step == 13) { return 1911; }
+        if (step == 14) { return 2273; }
+        return 0;
+    }
+
+    fn tickGate() {
+        if (gate0 > 0) {
+            gate0 = gate0 - 1;
+            if (gate0 == 0) {
+                Sound.stopVoice(0);
+            }
+        }
+    }
+
+    fn playStep(step: int) {
+        var period: int;
+
+        period = Main.noteAt(step);
+        if (period > 0) {
+            Sound.setVoice(0, period, 12, 0);
+            gate0 = 5;
+        } else {
+            Sound.stopVoice(0);
+            gate0 = 0;
+        }
+    }
+
+    fn main() {
+        var frame: int;
+        var step: int;
+
+        Sound.silence();
+        poke(0xFF30, 1);
+        FrameClock.init(60);
+        gate0 = 0;
+        frame = 0;
+
+        loop {
+            Main.tickGate();
+            if ((frame & 7) == 0) {
+                step = ((frame >> 3) & 15);
+                Main.playStep(step);
+            }
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+            if (frame > 127) {
+                frame = 0;
+                Sound.silence();
+                gate0 = 0;
+            }
+        }
+    }
+}

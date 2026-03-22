@@ -1,0 +1,40 @@
+# Build artifacts and generated files
+FPGA/sim/*.log
+FPGA/sim/*.out
+FPGA/sim/*.vcd
+FPGA/__pycache__/
+FPGA/**/*.pyc
+FPGA/sim/fixtures/*.mem
+!FPGA/sim/fixtures/top_exec_loader_boot.mem
+!FPGA/sim/fixtures/top_exec_loader_program.mem
+!FPGA/sim/fixtures/top_vga_program.mem
+!FPGA/sim/fixtures/vga_preload.mem
+
+# Vivado project files
+*.xpr
+*.bit
+*.ltx
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.srcs/
+vivado*.jou
+vivado*.log
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Temporary and local files
+tmp/
+*.wav
+
+# Claude Code workspace data
+.claude/
+
+# OS-generated
+.DS_Store
+Thumbs.db

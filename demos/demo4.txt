@@ -1,0 +1,635 @@
+// ============================================================
+// NEXA-16 DEMOSCENE DEMO -- "RECURSIVE NIGHTMARES"
+//
+//   Part I   -- RASTER BARS    (200 frames)
+//   Part II  -- WARP STARFIELD (300 frames)
+//   Part III -- INFERNO        (200 frames, fire + stars)
+//   Part IV  -- PLASMA STORM   (300 frames)
+//
+// Soundtrack: 4-channel synthwave (A minor, 30 fps target)
+//   Ch0 -- sawtooth lead  (waveform 2)
+//   Ch1 -- sawtooth bass  (waveform 2)
+//   Ch2 -- triangle pad   (waveform 1)
+//   Ch3 -- noise drums
+//
+// Display: 160x120, 4-bit color, pixel mode.
+// 4 pixels per word; framebuffer -5120 .. -321.
+// ============================================================
+
+class Main {
+
+    // -- Lookup tables -----------------------------------------
+    static sinTab:  Array;  // [256]  -127..127
+    static normTab: Array;  // [512]  plasma: (i>>5)&15
+    static sumHeat: Array;  // [46]   fire cooling
+    static c12tab:  Array;  // [16]   i<<12
+    static c8tab:   Array;  // [16]   i<<8
+    static c4tab:   Array;  // [16]   i<<4
+
+    // -- Effect state ------------------------------------------
+    static fireBuf: Array;  // [6400] 160x40 heat grid
+    static starX:   Array;  // [64]
+    static starY:   Array;  // [64]
+    static starZ:   Array;  // [64]   depth 1..63
+
+    // -- Synthwave music data ----------------------------------
+    // Lead: 16-step melody in A natural minor (sawtooth)
+    // Periods (Nexa-16 units): A4=91 B4=81 C5=76 D5=68 E5=61 F5=57 G5=54
+    //                        A3=182 C4=152 E4=121 G4=102 F4=114
+    static melody:  Array;  // [16]
+    // Bass: 8-step root walk Am-F-C-G, two steps per chord (sawtooth)
+    // A2=364 F2=457 C3=304 G2=408
+    static bass:    Array;  // [8]
+    // Pad: 8-step chord arpeggio, triangle (fast, every 2 frames)
+    // Cycles through Am / F / C / G arpeggios
+    static pad:     Array;  // [32]  (4 chords x 8 notes)
+    // Percussion: kick / hihat / snare / hihat pattern (noise)
+    static percPer: Array;  // [8]
+    static percVol: Array;  // [8]
+
+    // -- Music counters (no lib calls) -------------------------
+    static melTimer:  int;  // 0..7   fires every 8 frames
+    static melStep:   int;  // 0..15
+    static bassTimer: int;  // 0..31  fires every 32 frames
+    static bassStep:  int;  // 0..7
+    static padTimer:  int;  // 0..1   fires every 2 frames
+    static padStep:   int;  // 0..31  (4 chords x 8 steps)
+    static percTimer: int;  // 0..7   same grid as melody
+    static percStep:  int;  // 0..7
+
+    // -- RNG ---------------------------------------------------
+    static seed: int;
+
+
+    // ===========================================================
+    // INITIALIZATION
+    // ===========================================================
+
+    fn initTables() {
+        var i: int;
+        var q: int;
+        var s: int;
+
+        // Sine table
+        sinTab = Array.new(256);
+        i = 0;
+        while (i < 65) {
+            q = (i * (128 - i));
+            s = (q >> 5);
+            if (s > 127) { s = 127; }
+            sinTab[i] = s;
+            i = i + 1;
+        }
+        i = 1;
+        while (i < 64) {
+            sinTab[64 + i] = sinTab[64 - i];
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 128) {
+            sinTab[128 + i] = -sinTab[i];
+            i = i + 1;
+        }
+
+        // Norm table
+        normTab = Array.new(512);
+        i = 0;
+        while (i < 512) {
+            normTab[i] = ((i >> 5) & 15);
+            i = i + 1;
+        }
+
+        // Fire heat table
+        sumHeat = Array.new(46);
+        i = 0;
+        while (i < 46) {
+            s = ((i / 3) - 1);
+            if (s < 0) { s = 0; }
+            sumHeat[i] = s;
+            i = i + 1;
+        }
+
+        // Pixel shift tables (computed once -- avoids lib calls in render)
+        c12tab = Array.new(16);
+        c8tab  = Array.new(16);
+        c4tab  = Array.new(16);
+        i = 0;
+        while (i < 16) {
+            c12tab[i] = Math.shiftLeft(i, 12);
+            c8tab[i]  = Math.shiftLeft(i, 8);
+            c4tab[i]  = Math.shiftLeft(i, 4);
+            i = i + 1;
+        }
+    }
+
+    fn initMusic() {
+        // ---- Lead melody: A natural minor, 16 steps ----------
+        // Pattern: i vi III VII i vi III VII (two bars)
+        // Bar 1 -- Am colour: E A C E D C A G
+        // Bar 2 -- descending run into turnaround: F E D C B A G E
+        melody = Array.new(16);
+        melody[0]  = 61;   // E5
+        melody[1]  = 91;   // A4
+        melody[2]  = 76;   // C5
+        melody[3]  = 61;   // E5
+        melody[4]  = 68;   // D5
+        melody[5]  = 76;   // C5
+        melody[6]  = 91;   // A4
+        melody[7]  = 102;  // G4
+        melody[8]  = 114;  // F4
+        melody[9]  = 61;   // E5
+        melody[10] = 68;   // D5
+        melody[11] = 76;   // C5
+        melody[12] = 81;   // B4
+        melody[13] = 91;   // A4
+        melody[14] = 102;  // G4
+        melody[15] = 61;   // E5  (resolve back)
+
+        // ---- Bass: root walk Am-F-C-G, two steps each --------
+        bass = Array.new(8);
+        bass[0] = 182;  // A2  (Am)
+        bass[1] = 182;
+        bass[2] = 228;  // F2
+        bass[3] = 228;
+        bass[4] = 304;  // C3
+        bass[5] = 304;
+        bass[6] = 204;  // G2 (approx)
+        bass[7] = 204;
+
+        // ---- Pad arpeggios: 4 chords x 8 notes = 32 steps ---
+        // Each chord gets 8 pad steps (every 2 frames = 16 frames/chord).
+        // Am  = A4 C5 E5 A5 E5 C5 A4 G4
+        // Fmaj= F4 A4 C5 F5 C5 A4 F4 E4
+        // Cmaj= C4 E4 G4 C5 G4 E4 C4 B3
+        // Gmaj= G4 B4 D5 G5 D5 B4 G4 A4
+        pad = Array.new(32);
+        // Am (steps 0-7)
+        pad[0]  = 91;   // A4
+        pad[1]  = 76;   // C5
+        pad[2]  = 61;   // E5
+        pad[3]  = 45;   // A5 (approx)
+        pad[4]  = 61;   // E5
+        pad[5]  = 76;   // C5
+        pad[6]  = 91;   // A4
+        pad[7]  = 102;  // G4
+        // Fmaj (steps 8-15)
+        pad[8]  = 114;  // F4
+        pad[9]  = 91;   // A4
+        pad[10] = 76;   // C5
+        pad[11] = 57;   // F5
+        pad[12] = 76;   // C5
+        pad[13] = 91;   // A4
+        pad[14] = 114;  // F4
+        pad[15] = 121;  // E4
+        // Cmaj (steps 16-23)
+        pad[16] = 152;  // C4
+        pad[17] = 121;  // E4
+        pad[18] = 102;  // G4
+        pad[19] = 76;   // C5
+        pad[20] = 102;  // G4
+        pad[21] = 121;  // E4
+        pad[22] = 152;  // C4
+        pad[23] = 162;  // B3 (approx)
+        // Gmaj (steps 24-31)
+        pad[24] = 102;  // G4
+        pad[25] = 81;   // B4
+        pad[26] = 68;   // D5
+        pad[27] = 54;   // G5
+        pad[28] = 68;   // D5
+        pad[29] = 81;   // B4
+        pad[30] = 102;  // G4
+        pad[31] = 91;   // A4
+
+        // ---- Percussion: kick / hihat / snare pattern --------
+        // Period: low = low-pitched (kick 80), high = high-pitched (hihat 6)
+        percPer = Array.new(8);
+        percVol = Array.new(8);
+        percPer[0] = 80;   percVol[0] = 14;  // kick
+        percPer[1] = 6;    percVol[1] = 5;   // hihat
+        percPer[2] = 24;   percVol[2] = 12;  // snare
+        percPer[3] = 6;    percVol[3] = 5;   // hihat
+        percPer[4] = 80;   percVol[4] = 14;  // kick (double)
+        percPer[5] = 80;   percVol[5] = 10;  // kick ghost
+        percPer[6] = 24;   percVol[6] = 12;  // snare
+        percPer[7] = 6;    percVol[7] = 5;   // hihat
+    }
+
+    fn resetMusic() {
+        melTimer  = 0;
+        melStep   = 0;
+        bassTimer = 0;
+        bassStep  = 0;
+        padTimer  = 0;
+        padStep   = 0;
+        percTimer = 0;
+        percStep  = 0;
+        // Ch0: sawtooth lead (waveform 2)
+        Sound.setVoice(0, melody[0],  11, 2);
+        // Ch1: sawtooth bass (waveform 2)
+        Sound.setVoice(1, bass[0],     9, 2);
+        // Ch2: triangle pad  (waveform 1)
+        Sound.setVoice(2, pad[0],      6, 1);
+        // Ch3: noise kick
+        Sound.setVoice(3, percPer[0], percVol[0], 0);
+    }
+
+    fn initStars() {
+        var i: int;
+        starX = Array.new(64);
+        starY = Array.new(64);
+        starZ = Array.new(64);
+        i = 0;
+        while (i < 64) {
+            starX[i] = ((Main.rand() & 127) - 64);
+            starY[i] = ((Main.rand() & 63)  - 32);
+            starZ[i] = ((Main.rand() & 62)  + 1);
+            i = i + 1;
+        }
+    }
+
+    fn initFire() {
+        var i: int;
+        fireBuf = Array.new(6400);
+        i = 0;
+        while (i < 6400) {
+            fireBuf[i] = 0;
+            i = i + 1;
+        }
+    }
+
+
+    // ===========================================================
+    // PRIMITIVES
+    // ===========================================================
+
+    fn rand() -> int {
+        seed = (seed ^ Math.shiftLeft(seed, 7));
+        seed = (seed ^ Math.shiftRight(seed, 9));
+        seed = (seed ^ Math.shiftLeft(seed, 8));
+        seed = (seed & 32767);
+        if (seed == 0) { seed = 1; }
+        return seed;
+    }
+
+    fn pack4(c0: int, c1: int, c2: int, c3: int) -> int {
+        return (c12tab[c0] | c8tab[c1] | c4tab[c2] | c3);
+    }
+
+    fn wipeScreen() {
+        var addr: int;
+        addr = -5120;
+        while (addr < -320) {
+            poke(addr, 0);
+            addr = addr + 1;
+        }
+    }
+
+    fn setPixel(x: int, y: int, c: int) {
+        var addr: int;
+        var word: int;
+        var slot: int;
+        addr = (-5120 + (y * 40) + (x >> 2));
+        slot = (x & 3);
+        word = peek(addr);
+        if (slot == 0) {
+            word = ((word &  4095) | c12tab[c]);
+        } else {
+            if (slot == 1) {
+                word = ((word & -3841) | c8tab[c]);
+            } else {
+                if (slot == 2) {
+                    word = ((word &  -241) | c4tab[c]);
+                } else {
+                    word = ((word &   -16) | c);
+                }
+            }
+        }
+        poke(addr, word);
+    }
+
+
+    // ===========================================================
+    // MUSIC -- zero lib-calls in hot path
+    //
+    // All timers: increment, compare, reset. No %, /, >>.
+    // Waveforms: 0=square, 1=triangle, 2=sawtooth (per spec).
+    // ===========================================================
+
+    fn updateMusic() {
+        // Ch0: sawtooth lead, every 8 frames
+        melTimer = (melTimer + 1);
+        if (melTimer > 7) {
+            melTimer = 0;
+            Sound.setVoice(0, melody[melStep], 11, 2);
+            melStep = (melStep + 1);
+            if (melStep > 15) { melStep = 0; }
+        }
+
+        // Ch1: sawtooth bass, every 32 frames
+        bassTimer = (bassTimer + 1);
+        if (bassTimer > 31) {
+            bassTimer = 0;
+            Sound.setVoice(1, bass[bassStep], 9, 2);
+            bassStep = (bassStep + 1);
+            if (bassStep > 7) { bassStep = 0; }
+        }
+
+        // Ch2: triangle pad arpeggio, every 2 frames
+        padTimer = (padTimer + 1);
+        if (padTimer > 1) {
+            padTimer = 0;
+            Sound.setVoice(2, pad[padStep], 6, 1);
+            padStep = (padStep + 1);
+            if (padStep > 31) { padStep = 0; }
+        }
+
+        // Ch3: noise percussion, same 8-frame grid as melody.
+        // Trigger on step start, cut 2 frames later (punchy hit).
+        percTimer = (percTimer + 1);
+        if (percTimer > 7) {
+            percTimer = 0;
+            Sound.setVoice(3, percPer[percStep], percVol[percStep], 0);
+            percStep = (percStep + 1);
+            if (percStep > 7) { percStep = 0; }
+        }
+        if (percTimer == 2) {
+            Sound.stopVoice(3);
+        }
+    }
+
+
+    // ===========================================================
+    // EFFECT I: RASTER BARS
+    // Two sine waves interfere per scanline -- vivid color sweep.
+    // ===========================================================
+
+    fn drawBars(t: int) {
+        var y:      int;
+        var t2:     int;
+        var v:      int;
+        var color:  int;
+        var packed: int;
+        var x:      int;
+        var sa:     int;
+
+        t2 = (t + t);
+        sa = -5120;
+        y  = 0;
+        while (y < 120) {
+            v = (sinTab[((t  + y)     & 255)] +
+                 sinTab[((t2 + y + y) & 255)] + 254);
+            color  = ((v >> 5) & 15);
+            packed = Main.pack4(color, color, color, color);
+            x = 0;
+            while (x < 40) {
+                poke(sa, packed);
+                sa = sa + 1;
+                x  = x  + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+
+    // ===========================================================
+    // EFFECT II & III: PERSPECTIVE STARFIELD
+    //
+    // Star brightness: near=white(15), mid=light gray(7), far=dark(8)
+    // ===========================================================
+
+    fn starColor(z: int) -> int {
+        if (z < 21) { return 15; }
+        if (z < 42) { return 7;  }
+        return 8;
+    }
+
+    fn stepStars() {
+        var i:  int;
+        var ox: int;
+        var oy: int;
+        var c:  int;
+        var z:  int;
+        var sx: int;
+        var sy: int;
+
+        i = 0;
+        while (i < 64) {
+            z  = starZ[i];
+            sx = starX[i];
+            sy = starY[i];
+
+            // Erase
+            ox = (80 + ((sx * 80) / z));
+            oy = (60 + ((sy * 60) / z));
+            if ((ox > 0) & (ox < 159) & (oy > 0) & (oy < 119)) {
+                Main.setPixel(ox, oy, 0);
+            }
+
+            // Advance
+            z = (z - 1);
+            if (z < 1) {
+                z  = 63;
+                sx = ((Main.rand() & 127) - 64);
+                sy = ((Main.rand() & 63)  - 32);
+                starX[i] = sx;
+                starY[i] = sy;
+            }
+            starZ[i] = z;
+
+            // Draw
+            ox = (80 + ((sx * 80) / z));
+            oy = (60 + ((sy * 60) / z));
+            if ((ox > 0) & (ox < 159) & (oy > 0) & (oy < 119)) {
+                c = Main.starColor(z);
+                Main.setPixel(ox, oy, c);
+            }
+
+            i = i + 1;
+        }
+    }
+
+
+    // ===========================================================
+    // EFFECT III: FIRE
+    // ===========================================================
+
+    fn heatToColor(h: int) -> int {
+        if (h < 1)  { return 0;  }
+        if (h < 3)  { return 1;  }
+        if (h < 6)  { return 4;  }
+        if (h < 9)  { return 6;  }
+        if (h < 12) { return 14; }
+        return 15;
+    }
+
+    fn stepFire() {
+        var rowStart: int;
+        var col:      int;
+        var idx:      int;
+        var bL:       int;
+        var bC:       int;
+        var bR:       int;
+
+        rowStart = 6240;
+        col = 0;
+        while (col < 160) {
+            fireBuf[rowStart + col] = ((Main.rand() & 7) + 8);
+            col = col + 1;
+        }
+
+        rowStart = 6080;
+        while (rowStart >= 0) {
+            col = 0;
+            while (col < 160) {
+                idx = (rowStart + col);
+                bC  = fireBuf[idx + 160];
+                if (col > 0) {
+                    bL = fireBuf[idx + 159];
+                } else {
+                    bL = bC;
+                }
+                if (col < 159) {
+                    bR = fireBuf[idx + 161];
+                } else {
+                    bR = bC;
+                }
+                fireBuf[idx] = sumHeat[(bC + bL + bR)];
+                col = col + 1;
+            }
+            rowStart = (rowStart - 160);
+        }
+    }
+
+    fn drawFire() {
+        var sa:  int;
+        var bi:  int;
+        var row: int;
+        var col: int;
+
+        // Rows 80-119: base addr -5120 + 80*40 = -1920
+        sa  = -1920;
+        bi  = 0;
+        row = 0;
+        while (row < 40) {
+            col = 0;
+            while (col < 40) {
+                poke(sa, Main.pack4(
+                    Main.heatToColor(fireBuf[bi]),
+                    Main.heatToColor(fireBuf[bi + 1]),
+                    Main.heatToColor(fireBuf[bi + 2]),
+                    Main.heatToColor(fireBuf[bi + 3])));
+                sa = sa + 1;
+                bi = bi + 4;
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+
+
+    // ===========================================================
+    // EFFECT IV: PLASMA STORM
+    // ===========================================================
+
+    fn drawPlasma(t: int) {
+        var y:      int;
+        var sa:     int;
+        var vy:     int;
+        var xAngle: int;
+        var tHalf:  int;
+        var a0:     int;
+        var wx:     int;
+
+        tHalf = ((t >> 1) & 255);
+        sa    = -5120;
+        y     = 0;
+        while (y < 120) {
+            vy     = sinTab[((y + t) & 255)];
+            xAngle = tHalf;
+            wx     = 0;
+            while (wx < 40) {
+                a0 = (xAngle & 255);
+                poke(sa, Main.pack4(
+                    normTab[(vy + sinTab[a0]               + 254)],
+                    normTab[(vy + sinTab[((a0 + 1) & 255)] + 254)],
+                    normTab[(vy + sinTab[((a0 + 2) & 255)] + 254)],
+                    normTab[(vy + sinTab[((a0 + 3) & 255)] + 254)]));
+                sa     = sa     + 1;
+                xAngle = ((xAngle + 4) & 255);
+                wx     = wx     + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+
+    // ===========================================================
+    // MAIN
+    // ===========================================================
+
+    fn main() {
+        var frame: int;
+
+        poke(0xFF30, 1);
+        seed = 31337;
+        Main.initTables();
+        Main.initMusic();
+
+        // Target 30 fps -- FrameClock drives pacing for all parts
+        FrameClock.init(30);
+
+        // Part I: Raster Bars
+        Main.wipeScreen();
+        Main.resetMusic();
+        frame = 0;
+        while (frame < 200) {
+            Main.updateMusic();
+            Main.drawBars(frame);
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+        }
+
+        // Part II: Warp Starfield
+        Sound.silence();
+        Main.wipeScreen();
+        Main.initStars();
+        Main.resetMusic();
+        frame = 0;
+        while (frame < 300) {
+            Main.updateMusic();
+            Main.stepStars();
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+        }
+
+        // Part III: Inferno (fire lower half + stars full screen)
+        Sound.silence();
+        Main.wipeScreen();
+        Main.initFire();
+        Main.resetMusic();
+        frame = 0;
+        while (frame < 200) {
+            Main.updateMusic();
+            Main.stepFire();
+            Main.drawFire();
+            Main.stepStars();
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+        }
+
+        // Part IV: Plasma Storm
+        Sound.silence();
+        Main.wipeScreen();
+        Main.resetMusic();
+        frame = 0;
+        while (frame < 300) {
+            Main.updateMusic();
+            Main.drawPlasma(frame);
+            FrameClock.waitNextFrame();
+            frame = frame + 1;
+        }
+
+        Sound.silence();
+        halt();
+    }
+}

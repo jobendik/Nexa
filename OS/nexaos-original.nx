@@ -1,0 +1,1577 @@
+// ============================================================
+// NexaOS v2.1 — Complete DOS-like Operating System
+// for the Nexa-16 CPU Emulator
+// Written in Nexa
+//
+// Architecture:
+//   Disk   — Low-level sector I/O via DMA (0xFF50-0xFF53)
+//   Fs     — FAT filesystem (256 sectors, 16 dir entries)
+//   Editor — EDLIN-style line editor (reusable static buffers)
+//   Shell  — DOS command interpreter
+//
+// Filesystem layout (NexaFS v2):
+//   Sector 0:     Superblock (magic 0x4844, version, layout)
+//   Sectors 1-2:  FAT table (256 entries, 1 word each)
+//   Sectors 3-4:  Root directory (16 entries x 16 words)
+//   Sectors 5-255: Data sectors (251 usable)
+//
+// v2.1: Transaction-safe writes, heap reuse, truncation warnings,
+//   complete CHKDSK, disk error handling, mount validation,
+//   batch recursion guard, AUTOEXEC.BAT auto-run.
+// ============================================================
+
+fn main() {
+    poke(0xFF30, 0);
+    Disk.init();
+    Fs.init();
+    var sh: Shell = Shell.new();
+    sh.run();
+    halt();
+}
+
+// ============================================================
+// Disk — Low-level sector I/O via DMA
+// read/write return 0 on success, -1 on error.
+// ============================================================
+class Disk {
+    static buf: int;
+
+    fn init() {
+        buf = Memory.alloc(128);
+    }
+
+    fn read(sector: int, dest: int) -> int {
+        poke(0xFF52, dest);
+        poke(0xFF51, sector);
+        poke(0xFF50, 1);
+        var timeout: int = 1000;
+        while ((peek(0xFF53) & 1) != 0) {
+            timeout = timeout - 1;
+            if (timeout == 0) { return -1; }
+        }
+        if ((peek(0xFF53) & 4) != 0) { return -1; }
+        return 0;
+    }
+
+    fn write(sector: int, src: int) -> int {
+        poke(0xFF52, src);
+        poke(0xFF51, sector);
+        poke(0xFF50, 2);
+        var timeout: int = 1000;
+        while ((peek(0xFF53) & 1) != 0) {
+            timeout = timeout - 1;
+            if (timeout == 0) { return -1; }
+        }
+        if ((peek(0xFF53) & 4) != 0) { return -1; }
+        return 0;
+    }
+
+    fn getBuf() -> int { return buf; }
+
+    fn readBuf(sector: int) -> int {
+        Disk.read(sector, buf);
+        return buf;
+    }
+
+    fn writeBuf(sector: int) { Disk.write(sector, buf); }
+
+    fn clearBuf() {
+        var i: int = 0;
+        while (i < 128) { poke(buf + i, 0); i = i + 1; }
+    }
+}
+
+// ============================================================
+// Fs — FAT Filesystem
+// writeFileData uses two-phase commit for crash safety.
+// ============================================================
+class Fs {
+    static fat: int;
+    static dir: int;
+    static sec: int;
+    static mounted: bool;
+    static freeCount: int;
+
+    fn init() {
+        fat = Memory.alloc(256);
+        dir = Memory.alloc(256);
+        sec = Memory.alloc(128);
+        mounted = false;
+        freeCount = 0;
+        Fs.tryMount();
+    }
+
+    fn isMounted() -> bool { return mounted; }
+    fn fatGet(i: int) -> int { return peek(fat + i); }
+    fn fatSet(i: int, v: int) { poke(fat + i, v); }
+
+    fn dirOff(e: int, f: int) -> int {
+        var o: int = e + e; o = o + o; o = o + o; o = o + o;
+        return o + f;
+    }
+    fn dirGet(e: int, f: int) -> int { return peek(dir + Fs.dirOff(e, f)); }
+    fn dirSet(e: int, f: int, v: int) { poke(dir + Fs.dirOff(e, f), v); }
+
+    fn loadFat() { Disk.read(1, fat); Disk.read(2, fat + 128); }
+    fn saveFat() { Disk.write(1, fat); Disk.write(2, fat + 128); }
+    fn loadDir() { Disk.read(3, dir); Disk.read(4, dir + 128); }
+    fn saveDir() { Disk.write(3, dir); Disk.write(4, dir + 128); }
+
+    // Validates superblock magic, version, and layout fields
+    fn tryMount() {
+        Disk.read(0, sec);
+        if (peek(sec) != 0x4844) { mounted = false; return; }
+        if (peek(sec + 1) != 2) { mounted = false; return; }
+        if ((peek(sec + 3) != 1) | (peek(sec + 5) != 3) | (peek(sec + 7) != 5)) {
+            mounted = false; return;
+        }
+        Fs.loadFat();
+        Fs.loadDir();
+        mounted = true;
+        Fs.countFree();
+    }
+
+    fn countFree() {
+        freeCount = 0;
+        var i: int = 5;
+        while (i < 256) {
+            if (Fs.fatGet(i) == 0) { freeCount = freeCount + 1; }
+            i = i + 1;
+        }
+    }
+
+    fn getFreeCount() -> int { return freeCount; }
+    fn getSec() -> int { return sec; }
+    fn fileSize(idx: int) -> int { return Fs.dirGet(idx, 13); }
+
+    fn format() {
+        var i: int = 0;
+        while (i < 128) { poke(sec + i, 0); i = i + 1; }
+        poke(sec, 0x4844);
+        poke(sec + 1, 2);
+        poke(sec + 2, 256);
+        poke(sec + 3, 1);
+        poke(sec + 4, 2);
+        poke(sec + 5, 3);
+        poke(sec + 6, 2);
+        poke(sec + 7, 5);
+        poke(sec + 8, 251);
+        poke(sec + 9, 72);  // H
+        poke(sec + 10, 65); // A
+        poke(sec + 11, 67); // C
+        poke(sec + 12, 75); // K
+        poke(sec + 13, 68); // D
+        poke(sec + 14, 79); // O
+        poke(sec + 15, 83); // S
+        Disk.write(0, sec);
+
+        i = 0;
+        while (i < 256) { Fs.fatSet(i, 0); i = i + 1; }
+        Fs.fatSet(0, 0xFFFE);
+        Fs.fatSet(1, 0xFFFE);
+        Fs.fatSet(2, 0xFFFE);
+        Fs.fatSet(3, 0xFFFE);
+        Fs.fatSet(4, 0xFFFE);
+        Fs.saveFat();
+
+        i = 0;
+        while (i < 256) { poke(dir + i, 0); i = i + 1; }
+        Fs.saveDir();
+
+        Disk.clearBuf();
+        i = 5;
+        while (i < 256) { Disk.writeBuf(i); i = i + 1; }
+
+        mounted = true;
+        freeCount = 251;
+        Fs.createDefaultFiles();
+    }
+
+    fn createDefaultFiles() {
+        var idx: int = Fs.createFile(82, 69, 65, 68, 77, 69, 32, 32, 84, 88, 84);
+        if (idx < 0) { return; }
+        var content: int = Memory.alloc(512);
+        var p: int = 0;
+        p = Fs.writeStr(content, p, "NexaOS v2.1 - README");
+        poke(content + p, 10); p = p + 1;
+        p = Fs.writeStr(content, p, "========================");
+        poke(content + p, 10); p = p + 1;
+        poke(content + p, 10); p = p + 1;
+        p = Fs.writeStr(content, p, "Welcome to NexaOS, a DOS-inspired");
+        poke(content + p, 10); p = p + 1;
+        p = Fs.writeStr(content, p, "command shell for the Nexa-16");
+        poke(content + p, 10); p = p + 1;
+        p = Fs.writeStr(content, p, "CPU emulator.");
+        poke(content + p, 10); p = p + 1;
+        poke(content + p, 10); p = p + 1;
+        p = Fs.writeStr(content, p, "Type HELP for command list.");
+        poke(content + p, 10); p = p + 1;
+        Fs.writeFileData(idx, content, p);
+
+        var idx2: int = Fs.createFile(65, 85, 84, 79, 69, 88, 69, 67, 66, 65, 84);
+        if (idx2 >= 0) {
+            var p2: int = Fs.writeStr(content, 0, "ECHO Welcome to NexaOS v2.1!");
+            poke(content + p2, 10); p2 = p2 + 1;
+            p2 = Fs.writeStr(content, p2, "VER");
+            poke(content + p2, 10); p2 = p2 + 1;
+            Fs.writeFileData(idx2, content, p2);
+        }
+        Memory.deAlloc(content);
+    }
+
+    fn writeStr(buf: int, p: int, s: String) -> int {
+        var i: int = 0;
+        var n: int = s.length();
+        while (i < n) { poke(buf + p, s.charAt(i)); p = p + 1; i = i + 1; }
+        return p;
+    }
+
+    fn findFile(n0: int, n1: int, n2: int, n3: int, n4: int, n5: int, n6: int, n7: int, e0: int, e1: int, e2: int) -> int {
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) != 0) {
+                if ((Fs.dirGet(i, 0) == n0) & (Fs.dirGet(i, 1) == n1) &
+                    (Fs.dirGet(i, 2) == n2) & (Fs.dirGet(i, 3) == n3) &
+                    (Fs.dirGet(i, 4) == n4) & (Fs.dirGet(i, 5) == n5) &
+                    (Fs.dirGet(i, 6) == n6) & (Fs.dirGet(i, 7) == n7) &
+                    (Fs.dirGet(i, 8) == e0) & (Fs.dirGet(i, 9) == e1) &
+                    (Fs.dirGet(i, 10) == e2)) {
+                    return i;
+                }
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn createFile(n0: int, n1: int, n2: int, n3: int, n4: int, n5: int, n6: int, n7: int, e0: int, e1: int, e2: int) -> int {
+        var existing: int = Fs.findFile(n0, n1, n2, n3, n4, n5, n6, n7, e0, e1, e2);
+        if (existing >= 0) { return -2; }
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) == 0) {
+                Fs.dirSet(i, 0, n0); Fs.dirSet(i, 1, n1);
+                Fs.dirSet(i, 2, n2); Fs.dirSet(i, 3, n3);
+                Fs.dirSet(i, 4, n4); Fs.dirSet(i, 5, n5);
+                Fs.dirSet(i, 6, n6); Fs.dirSet(i, 7, n7);
+                Fs.dirSet(i, 8, e0); Fs.dirSet(i, 9, e1);
+                Fs.dirSet(i, 10, e2); Fs.dirSet(i, 11, 1);
+                Fs.dirSet(i, 12, 0); Fs.dirSet(i, 13, 0);
+                Fs.dirSet(i, 14, 0); Fs.dirSet(i, 15, 0);
+                Fs.saveDir();
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn allocSector() -> int {
+        var i: int = 5;
+        while (i < 256) {
+            if (Fs.fatGet(i) == 0) {
+                Fs.fatSet(i, 0xFFFF);
+                freeCount = freeCount - 1;
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn freeChain(s: int) {
+        while ((s > 0) & (s < 256)) {
+            var nxt: int = Fs.fatGet(s);
+            Fs.fatSet(s, 0);
+            freeCount = freeCount + 1;
+            if ((nxt == 0) | (nxt == 0xFFFF) | (nxt == 0xFFFE)) { return; }
+            s = nxt;
+        }
+    }
+
+    fn deleteFile(idx: int) {
+        var startSec: int = Fs.dirGet(idx, 12);
+        if (startSec > 0) { Fs.freeChain(startSec); Fs.saveFat(); }
+        Fs.dirSet(idx, 11, 0);
+        Fs.saveDir();
+    }
+
+    // Two-phase commit write: build new chain first, then swap.
+    // Returns 0=ok, -1=disk full (old data preserved).
+    fn writeFileData(idx: int, buf: int, len: int) -> int {
+        var oldStart: int = Fs.dirGet(idx, 12);
+
+        if (len == 0) {
+            Fs.dirSet(idx, 12, 0);
+            Fs.dirSet(idx, 13, 0);
+            if (oldStart > 0) { Fs.freeChain(oldStart); }
+            Fs.saveFat(); Fs.saveDir();
+            return 0;
+        }
+
+        // Phase 1: allocate new chain and write data
+        var firstSec: int = Fs.allocSector();
+        if (firstSec < 0) { return -1; }
+
+        var curSec: int = firstSec;
+        var pos: int = 0;
+        var secPos: int = 0;
+
+        while (pos < len) {
+            poke(sec + secPos, peek(buf + pos));
+            secPos = secPos + 1;
+            pos = pos + 1;
+
+            if ((secPos >= 128) | (pos >= len)) {
+                while (secPos < 128) { poke(sec + secPos, 0); secPos = secPos + 1; }
+                Disk.write(curSec, sec);
+                secPos = 0;
+                if (pos < len) {
+                    var newSec: int = Fs.allocSector();
+                    if (newSec < 0) {
+                        // Rollback: free the partial new chain
+                        Fs.freeChain(firstSec);
+                        Fs.saveFat();
+                        return -1;
+                    }
+                    Fs.fatSet(curSec, newSec);
+                    curSec = newSec;
+                }
+            }
+        }
+
+        // Phase 2: commit directory to new chain
+        Fs.dirSet(idx, 12, firstSec);
+        Fs.dirSet(idx, 13, len);
+
+        // Phase 3: free old chain (dir already points to new)
+        if (oldStart > 0) { Fs.freeChain(oldStart); }
+
+        Fs.saveFat(); Fs.saveDir();
+        return 0;
+    }
+
+    fn readFileData(idx: int, buf: int, maxLen: int) -> int {
+        var size: int = Fs.dirGet(idx, 13);
+        var startSec: int = Fs.dirGet(idx, 12);
+        if ((size == 0) | (startSec == 0)) { return 0; }
+        var curSec: int = startSec;
+        var pos: int = 0;
+        var limit: int = size;
+        if (limit > maxLen) { limit = maxLen; }
+        while ((pos < limit) & (curSec > 0) & (curSec < 256)) {
+            Disk.read(curSec, sec);
+            var i: int = 0;
+            while ((i < 128) & (pos < limit)) {
+                poke(buf + pos, peek(sec + i));
+                pos = pos + 1; i = i + 1;
+            }
+            var nxt: int = Fs.fatGet(curSec);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { curSec = 0; }
+            else { curSec = nxt; }
+        }
+        return pos;
+    }
+
+    fn chainLength(startSec: int) -> int {
+        var count: int = 0;
+        var s: int = startSec;
+        while ((s > 0) & (s < 256)) {
+            count = count + 1;
+            var nxt: int = Fs.fatGet(s);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { return count; }
+            s = nxt;
+            if (count > 256) { return count; }
+        }
+        return count;
+    }
+
+    fn renameFile(idx: int, n0: int, n1: int, n2: int, n3: int, n4: int, n5: int, n6: int, n7: int, e0: int, e1: int, e2: int) {
+        Fs.dirSet(idx, 0, n0); Fs.dirSet(idx, 1, n1);
+        Fs.dirSet(idx, 2, n2); Fs.dirSet(idx, 3, n3);
+        Fs.dirSet(idx, 4, n4); Fs.dirSet(idx, 5, n5);
+        Fs.dirSet(idx, 6, n6); Fs.dirSet(idx, 7, n7);
+        Fs.dirSet(idx, 8, e0); Fs.dirSet(idx, 9, e1);
+        Fs.dirSet(idx, 10, e2);
+        Fs.saveDir();
+    }
+}
+
+// ============================================================
+// Editor — EDLIN-style line editor
+// Static buffers allocated once, reused across sessions.
+// Max 4095 chars. Truncation warned on load.
+// ============================================================
+class Editor {
+    static ebuf: int;
+    static elen: int;
+    static ecap: int;
+    static lbuf: Array;
+    static llen: int;
+    static dirty: bool;
+    static fname: Array;
+    static inited: bool;
+
+    fn open(dirIdx: int) {
+        if (!inited) {
+            ecap = 4096;
+            ebuf = Memory.alloc(ecap);
+            lbuf = Array.new(82);
+            fname = Array.new(12);
+            inited = true;
+        }
+        llen = 0;
+        dirty = false;
+
+        var i: int = 0;
+        while (i < 11) { fname[i] = Fs.dirGet(dirIdx, i); i = i + 1; }
+        fname[11] = dirIdx;
+
+        var fileSize: int = Fs.fileSize(dirIdx);
+        elen = Fs.readFileData(dirIdx, ebuf, ecap - 1);
+
+        Output.println();
+        Output.printString("EDLIN - Editing: ");
+        Editor.printFilename();
+        Output.println();
+        Output.printString("  ");
+        Output.printInt(elen);
+        Output.printString(" chars, ");
+        Output.printInt(Editor.countLines());
+        Output.printString(" lines loaded.");
+        Output.println();
+        if (fileSize > (ecap - 1)) {
+            Output.printString("  WARNING: File has ");
+            Output.printInt(fileSize);
+            Output.printString(" chars, only first ");
+            Output.printInt(ecap - 1);
+            Output.printString(" loaded!");
+            Output.println();
+        }
+        Output.printString("  Type H for help.");
+        Output.println();
+        Output.println();
+        Editor.mainLoop();
+    }
+
+    fn printFilename() {
+        var i: int = 0;
+        while (i < 8) {
+            var c: int = fname[i];
+            if (c != 32) { Output.printChar(c); }
+            i = i + 1;
+        }
+        Output.printChar(46);
+        i = 8;
+        while (i < 11) {
+            var c2: int = fname[i];
+            if (c2 != 32) { Output.printChar(c2); }
+            i = i + 1;
+        }
+    }
+
+    // Trailing newline does NOT add extra line
+    fn countLines() -> int {
+        if (elen == 0) { return 0; }
+        var count: int = 1;
+        var i: int = 0;
+        while (i < elen) {
+            if (peek(ebuf + i) == 10) {
+                if ((i + 1) < elen) { count = count + 1; }
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    fn lineStart(n: int) -> int {
+        if (n <= 1) { return 0; }
+        var line: int = 1;
+        var i: int = 0;
+        while (i < elen) {
+            if (peek(ebuf + i) == 10) {
+                line = line + 1;
+                if (line >= n) { return i + 1; }
+            }
+            i = i + 1;
+        }
+        return elen;
+    }
+
+    fn lineEnd(n: int) -> int {
+        var start: int = Editor.lineStart(n);
+        var i: int = start;
+        while (i < elen) {
+            if (peek(ebuf + i) == 10) { return i; }
+            i = i + 1;
+        }
+        return elen;
+    }
+
+    fn readLine() {
+        llen = 0;
+        loop {
+            var c: int = Keyboard.readChar();
+            if (c == 10) { Output.println(); break; }
+            else {
+                if (c == 8) { if (llen > 0) { llen = llen - 1; Output.backSpace(); } }
+                else {
+                    if ((c > 31) & (c < 127) & (llen < 80)) {
+                        lbuf[llen] = c; llen = llen + 1; Output.printChar(c);
+                    }
+                }
+            }
+        }
+    }
+
+    fn parseNum(start: int) -> int {
+        var result: int = 0;
+        var i: int = start;
+        while (i < llen) {
+            var c: int = lbuf[i];
+            if ((c >= 48) & (c <= 57)) { result = result * 10 + (c - 48); }
+            else { break; }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    fn skipSpaces(start: int) -> int {
+        var i: int = start;
+        while ((i < llen) & (lbuf[i] == 32)) { i = i + 1; }
+        return i;
+    }
+
+    fn mainLoop() {
+        var listPage: int = 1;
+        loop {
+            Output.printChar(0x0E00 | 42);
+            Output.printChar(32);
+            Editor.readLine();
+
+            if (llen == 0) {
+                // Empty command: list next 20 lines
+                var total: int = Editor.countLines();
+                if ((total == 0) | (listPage > total)) { listPage = 1; }
+                var pageTo: int = listPage + 19;
+                if (pageTo > total) { pageTo = total; }
+                Editor.cmdList(listPage, pageTo);
+                listPage = pageTo + 1;
+            } else {
+                var cmd: int = lbuf[0];
+                if ((cmd > 96) & (cmd < 123)) { cmd = cmd - 32; }
+
+                if (cmd == 72) { Editor.cmdHelp(); }
+                else if (cmd == 80) { Editor.cmdList(1, Editor.countLines()); listPage = 1; }
+                else if (cmd == 76) {
+                    var s1: int = Editor.skipSpaces(1);
+                    var from: int = Editor.parseNum(s1);
+                    if (from == 0) { from = 1; }
+                    while ((s1 < llen) & (lbuf[s1] != 32)) { s1 = s1 + 1; }
+                    s1 = Editor.skipSpaces(s1);
+                    var to: int = Editor.parseNum(s1);
+                    if (to == 0) { to = from + 19; }
+                    Editor.cmdList(from, to);
+                    listPage = to + 1;
+                } else if (cmd == 73) {
+                    var s2: int = Editor.skipSpaces(1);
+                    var line: int = Editor.parseNum(s2);
+                    if (line == 0) { line = Editor.countLines() + 1; }
+                    Editor.cmdInsert(line);
+                } else if (cmd == 68) {
+                    var s3: int = Editor.skipSpaces(1);
+                    var dfrom: int = Editor.parseNum(s3);
+                    while ((s3 < llen) & (lbuf[s3] != 32)) { s3 = s3 + 1; }
+                    s3 = Editor.skipSpaces(s3);
+                    var dto: int = Editor.parseNum(s3);
+                    if (dto == 0) { dto = dfrom; }
+                    if (dfrom > 0) { Editor.cmdDelete(dfrom, dto); }
+                } else if (cmd == 82) {
+                    var s4: int = Editor.skipSpaces(1);
+                    var rline: int = Editor.parseNum(s4);
+                    if (rline > 0) { Editor.cmdReplace(rline); }
+                } else if (cmd == 83) { Editor.cmdSave(); return; }
+                else if (cmd == 81) {
+                    if (dirty) {
+                        Output.printString("Unsaved changes! Save (S) or quit (Q again).");
+                        Output.println();
+                        Output.printChar(0x0E00 | 42); Output.printChar(32);
+                        Editor.readLine();
+                        if ((llen > 0) & ((lbuf[0] == 81) | (lbuf[0] == 113))) {
+                            Output.printString("Abandoned."); Output.println(); return;
+                        }
+                    } else { Output.printString("Quit."); Output.println(); return; }
+                } else { Output.printString("Unknown command. Type H for help."); Output.println(); }
+            }
+        }
+    }
+
+    fn cmdHelp() {
+        Output.println();
+        Output.printString("EDLIN Commands:");
+        Output.println();
+        Output.printString("  (Enter)    List next 20 lines");
+        Output.println();
+        Output.printString("  L [n] [m]  List lines n to m");
+        Output.println();
+        Output.printString("  I [n]      Insert before line n");
+        Output.println();
+        Output.printString("             (end input with . on its own line)");
+        Output.println();
+        Output.printString("  D n [m]    Delete lines n through m");
+        Output.println();
+        Output.printString("  R n        Replace line n");
+        Output.println();
+        Output.printString("  P          Print all lines");
+        Output.println();
+        Output.printString("  S          Save and quit");
+        Output.println();
+        Output.printString("  Q          Quit without saving");
+        Output.println();
+        Output.printString("  H          This help");
+        Output.println();
+        Output.println();
+    }
+
+    fn cmdList(from: int, to: int) {
+        var total: int = Editor.countLines();
+        if (from < 1) { from = 1; }
+        if (to > total) { to = total; }
+        if (total == 0) { Output.printString("  (empty file)"); Output.println(); return; }
+        var lineNum: int = 1;
+        var i: int = 0;
+        while ((i < elen) & (lineNum <= to)) {
+            if (lineNum >= from) {
+                if (lineNum < 10) { Output.printChar(32); }
+                if (lineNum < 100) { Output.printChar(32); }
+                Output.printInt(lineNum); Output.printChar(58); Output.printChar(32);
+                while ((i < elen) & (peek(ebuf + i) != 10)) {
+                    Output.printChar(peek(ebuf + i)); i = i + 1;
+                }
+                Output.println();
+                if ((i < elen) & (peek(ebuf + i) == 10)) { i = i + 1; }
+                lineNum = lineNum + 1;
+            } else {
+                while ((i < elen) & (peek(ebuf + i) != 10)) { i = i + 1; }
+                if ((i < elen) & (peek(ebuf + i) == 10)) { i = i + 1; }
+                lineNum = lineNum + 1;
+            }
+        }
+    }
+
+    fn cmdInsert(beforeLine: int) {
+        Output.printString("  Insert before line ");
+        Output.printInt(beforeLine);
+        Output.printString(". End with . alone.");
+        Output.println();
+        var insertPos: int = Editor.lineStart(beforeLine);
+        loop {
+            Output.printChar(32); Output.printChar(32);
+            Editor.readLine();
+            if ((llen == 1) & (lbuf[0] == 46)) { break; }
+            var addLen: int = llen + 1;
+            if (elen + addLen >= ecap) {
+                Output.printString("Buffer full! (max ");
+                Output.printInt(ecap - 1); Output.printString(" chars)"); Output.println();
+                break;
+            }
+            var j: int = elen - 1;
+            while (j >= insertPos) { poke(ebuf + j + addLen, peek(ebuf + j)); j = j - 1; }
+            var k: int = 0;
+            while (k < llen) { poke(ebuf + insertPos + k, lbuf[k]); k = k + 1; }
+            poke(ebuf + insertPos + llen, 10);
+            elen = elen + addLen;
+            insertPos = insertPos + addLen;
+            dirty = true;
+        }
+    }
+
+    fn cmdDelete(from: int, to: int) {
+        var total: int = Editor.countLines();
+        if (from < 1) { from = 1; }
+        if (to > total) { to = total; }
+        if (from > to) { return; }
+        var startOff: int = Editor.lineStart(from);
+        var endOff: int = 0;
+        if (to >= total) { endOff = elen; } else { endOff = Editor.lineStart(to + 1); }
+        var delLen: int = endOff - startOff;
+        if (delLen <= 0) { return; }
+        var i: int = endOff;
+        while (i < elen) { poke(ebuf + i - delLen, peek(ebuf + i)); i = i + 1; }
+        elen = elen - delLen;
+        dirty = true;
+        Output.printString("  Deleted ");
+        Output.printInt(to - from + 1);
+        Output.printString(" line(s).");
+        Output.println();
+    }
+
+    fn cmdReplace(lineNum: int) {
+        var total: int = Editor.countLines();
+        if ((lineNum < 1) | (lineNum > total)) {
+            Output.printString("Invalid line number."); Output.println(); return;
+        }
+        Output.printString("  Old: ");
+        var start: int = Editor.lineStart(lineNum);
+        var end: int = Editor.lineEnd(lineNum);
+        var i: int = start;
+        while (i < end) { Output.printChar(peek(ebuf + i)); i = i + 1; }
+        Output.println();
+        Output.printString("  New: ");
+        Editor.readLine();
+        var oldLen: int = end - start;
+        var newLen: int = llen;
+        var diff: int = newLen - oldLen;
+        if ((elen + diff) >= ecap) { Output.printString("Buffer full!"); Output.println(); return; }
+        if (diff > 0) {
+            var j: int = elen - 1;
+            while (j >= end) { poke(ebuf + j + diff, peek(ebuf + j)); j = j - 1; }
+        } else if (diff < 0) {
+            var j2: int = end;
+            while (j2 < elen) { poke(ebuf + j2 + diff, peek(ebuf + j2)); j2 = j2 + 1; }
+        }
+        var k: int = 0;
+        while (k < llen) { poke(ebuf + start + k, lbuf[k]); k = k + 1; }
+        elen = elen + diff;
+        dirty = true;
+    }
+
+    fn cmdSave() {
+        var idx: int = fname[11];
+        var result: int = Fs.writeFileData(idx, ebuf, elen);
+        if (result < 0) {
+            Output.printString("  ERROR: Disk full! File NOT saved.");
+            Output.println();
+            return;
+        }
+        Output.printString("  Saved ");
+        Output.printInt(elen);
+        Output.printString(" chars to ");
+        Editor.printFilename();
+        Output.println();
+    }
+}
+
+// ============================================================
+// Shell — DOS Command Interpreter
+// ============================================================
+class Shell {
+    field buf: Array;
+    field len: int;
+    field pname: Array;
+    field pext: Array;
+    field fbuf: int;
+    static batchDepth: int;
+
+    new() {
+        this.buf = Array.new(82);
+        this.len = 0;
+        this.pname = Array.new(8);
+        this.pext = Array.new(3);
+        this.fbuf = Memory.alloc(4096);
+        batchDepth = 0;
+        Shell.drawHeader();
+        this.printBanner();
+    }
+
+    fn drawHeader() {
+        var i: int = 0;
+        while (i < 80) { poke(0xF000 + i, 0x1F20); i = i + 1; }
+        var title: String = "  NexaOS v2.1  ";
+        var j: int = 0;
+        while (j < title.length()) { poke(0xF000 + 32 + j, 0x1F00 | title.charAt(j)); j = j + 1; }
+        title.dispose();
+        var help: String = "[?=Help]";
+        var k: int = 0;
+        while (k < 8) { poke(0xF000 + 70 + k, 0x1F00 | help.charAt(k)); k = k + 1; }
+        help.dispose();
+        Output.moveCursor(1, 0);
+    }
+
+    method printBanner() {
+        Output.println();
+        Output.printString("NexaOS Version 2.1  [Nexa-16 CPU]");
+        Output.println();
+        Output.printString("(c) 2025 Nexa Labs  |  64K RAM  |  32K Disk  |  FAT filesystem");
+        Output.println();
+        Output.println();
+        if (Fs.isMounted()) {
+            Output.printString("Filesystem mounted. ");
+            Output.printInt(Fs.getFreeCount());
+            Output.printString(" sectors free.");
+            Output.println();
+        } else {
+            Output.printString("No filesystem found. Type FORMAT to initialize disk.");
+            Output.println();
+        }
+        Output.println();
+        Output.printString("Type HELP or ? for a list of commands.");
+        Output.println();
+        Output.println();
+    }
+
+    method run() {
+        // Auto-run AUTOEXEC.BAT
+        if (Fs.isMounted()) {
+            var aidx: int = Fs.findFile(65, 85, 84, 79, 69, 88, 69, 67, 66, 65, 84);
+            if (aidx >= 0) {
+                Output.printString("Executing AUTOEXEC.BAT...");
+                Output.println();
+                this.runBatchFile(aidx);
+                Output.println();
+            }
+        }
+        loop {
+            this.printPrompt();
+            this.readLine();
+            if (this.len > 0) { this.execCommand(); }
+        }
+    }
+
+    method printPrompt() {
+        Output.printChar(0x0A00 | 67); Output.printChar(0x0A00 | 58);
+        Output.printChar(0x0A00 | 92); Output.printChar(0x0A00 | 62);
+        Output.printChar(32);
+    }
+
+    method readLine() {
+        this.len = 0;
+        loop {
+            var c: int = Keyboard.readChar();
+            if ((c == 10) | (c == 13)) { Output.println(); break; }
+            else {
+                if (c == 8) { if (this.len > 0) { this.len = this.len - 1; Output.backSpace(); } }
+                else {
+                    if ((c > 31) & (c < 127) & (this.len < 80)) {
+                        this.buf[this.len] = c; this.len = this.len + 1; Output.printChar(c);
+                    }
+                }
+            }
+        }
+        this.buf[this.len] = 0;
+    }
+
+    method upcase(c: int) -> int {
+        if ((c > 96) & (c < 123)) { return c - 32; }
+        return c;
+    }
+
+    method matchCmd(cmd: String) -> bool {
+        var n: int = cmd.length();
+        if (this.len < n) { return false; }
+        var i: int = 0;
+        while (i < n) {
+            if (this.upcase(this.buf[i]) != cmd.charAt(i)) { return false; }
+            i = i + 1;
+        }
+        if (this.len > n) {
+            var nxt: int = this.buf[n];
+            if ((nxt != 32) & (nxt != 9) & (nxt != 0)) { return false; }
+        }
+        return true;
+    }
+
+    method argStart(cmdLen: int) -> int {
+        var i: int = cmdLen;
+        while ((i < this.len) & (this.buf[i] == 32)) { i = i + 1; }
+        return i;
+    }
+
+    method isValidFnameChar(c: int) -> bool {
+        if ((c >= 65) & (c <= 90)) { return true; }
+        if ((c >= 48) & (c <= 57)) { return true; }
+        if ((c == 95) | (c == 45) | (c == 33) | (c == 35)) { return true; }
+        if ((c == 36) | (c == 38) | (c == 40) | (c == 41)) { return true; }
+        if ((c == 64) | (c == 94) | (c == 126)) { return true; }
+        return false;
+    }
+
+    method parseFilename(start: int) -> bool {
+        var i: int = 0;
+        while (i < 8) { this.pname[i] = 32; i = i + 1; }
+        i = 0;
+        while (i < 3) { this.pext[i] = 32; i = i + 1; }
+        var pos: int = start;
+        var ni: int = 0;
+        while ((pos < this.len) & (this.buf[pos] == 32)) { pos = pos + 1; }
+        if (pos >= this.len) { return false; }
+        while ((pos < this.len) & (this.buf[pos] != 46) & (this.buf[pos] != 32)) {
+            var uc: int = this.upcase(this.buf[pos]);
+            if (ni < 8) {
+                if (!this.isValidFnameChar(uc)) { return false; }
+                this.pname[ni] = uc;
+                ni = ni + 1;
+            }
+            pos = pos + 1;
+        }
+        if (ni == 0) { return false; }
+        if ((pos < this.len) & (this.buf[pos] == 46)) {
+            pos = pos + 1;
+            var ei: int = 0;
+            while ((pos < this.len) & (this.buf[pos] != 32)) {
+                var ec: int = this.upcase(this.buf[pos]);
+                if (ei < 3) {
+                    if (!this.isValidFnameChar(ec)) { return false; }
+                    this.pext[ei] = ec;
+                    ei = ei + 1;
+                }
+                pos = pos + 1;
+            }
+        }
+        return true;
+    }
+
+    method findParsedFile() -> int {
+        return Fs.findFile(this.pname[0], this.pname[1], this.pname[2], this.pname[3],
+            this.pname[4], this.pname[5], this.pname[6], this.pname[7],
+            this.pext[0], this.pext[1], this.pext[2]);
+    }
+
+    method createParsedFile() -> int {
+        return Fs.createFile(this.pname[0], this.pname[1], this.pname[2], this.pname[3],
+            this.pname[4], this.pname[5], this.pname[6], this.pname[7],
+            this.pext[0], this.pext[1], this.pext[2]);
+    }
+
+    method printDirName(idx: int) {
+        var i: int = 0;
+        while (i < 8) { var c: int = Fs.dirGet(idx, i); if (c != 32) { Output.printChar(c); } i = i + 1; }
+        Output.printChar(46);
+        i = 8;
+        while (i < 11) { var c2: int = Fs.dirGet(idx, i); if (c2 != 32) { Output.printChar(c2); } i = i + 1; }
+    }
+
+    method printDirEntry(idx: int) {
+        var i: int = 0;
+        while (i < 8) { Output.printChar(Fs.dirGet(idx, i)); i = i + 1; }
+        Output.printChar(32);
+        i = 8;
+        while (i < 11) { Output.printChar(Fs.dirGet(idx, i)); i = i + 1; }
+    }
+
+    method parseHex(start: int) -> int {
+        var i: int = start;
+        var result: int = 0;
+        while ((i < this.len) & (this.buf[i] == 32)) { i = i + 1; }
+        if ((i + 1 < this.len) & (this.buf[i] == 48) & (this.upcase(this.buf[i + 1]) == 88)) { i = i + 2; }
+        while (i < this.len) {
+            var c: int = this.upcase(this.buf[i]);
+            if ((c >= 48) & (c <= 57)) { result = (result << 4) | (c - 48); }
+            else { if ((c >= 65) & (c <= 70)) { result = (result << 4) | (c - 55); } else { break; } }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    method printHex(val: int) {
+        var i: int = 3;
+        while (i > -1) {
+            var shift: int = i * 4;
+            var nibble: int = (val >> shift) & 15;
+            if (nibble < 10) { Output.printChar(48 + nibble); } else { Output.printChar(55 + nibble); }
+            i = i - 1;
+        }
+    }
+
+    method skipArg(start: int) -> int {
+        var i: int = start;
+        while ((i < this.len) & (this.buf[i] != 32)) { i = i + 1; }
+        return i;
+    }
+
+    method requireFs() -> bool {
+        if (!Fs.isMounted()) { Output.printString("No filesystem. Type FORMAT first."); Output.println(); return false; }
+        return true;
+    }
+
+    method requireFilename(start: int) -> bool {
+        var ok: bool = this.parseFilename(start);
+        if (!ok) { Output.printString("Invalid filename. Use 8.3 format (A-Z, 0-9, _-)."); Output.println(); return false; }
+        return true;
+    }
+
+    method execCommand() {
+        if (this.matchCmd("?") | this.matchCmd("HELP")) { this.cmdHelp(); }
+        else if (this.matchCmd("CLS")) { this.cmdCls(); }
+        else if (this.matchCmd("VER")) { this.cmdVer(); }
+        else if (this.matchCmd("ECHO")) { this.cmdEcho(); }
+        else if (this.matchCmd("COLOR")) { this.cmdColor(); }
+        else if (this.matchCmd("DIR")) { this.cmdDir(); }
+        else if (this.matchCmd("TYPE")) { this.cmdType(); }
+        else if (this.matchCmd("CREATE")) { this.cmdCreate(); }
+        else if (this.matchCmd("WRITE")) { this.cmdWrite(); }
+        else if (this.matchCmd("DEL")) { this.cmdDel(); }
+        else if (this.matchCmd("REN")) { this.cmdRen(); }
+        else if (this.matchCmd("COPY")) { this.cmdCopy(); }
+        else if (this.matchCmd("EDIT")) { this.cmdEdit(); }
+        else if (this.matchCmd("FORMAT")) { this.cmdFormat(); }
+        else if (this.matchCmd("CHKDSK")) { this.cmdChkdsk(); }
+        else if (this.matchCmd("PEEK")) { this.cmdPeek(); }
+        else if (this.matchCmd("POKE")) { this.cmdPoke(); }
+        else if (this.matchCmd("DUMP")) { this.cmdDump(); }
+        else if (this.matchCmd("MEM")) { this.cmdMem(); }
+        else if (this.matchCmd("TIME")) { this.cmdTime(); }
+        else if (this.matchCmd("BEEP")) { this.cmdBeep(); }
+        else if (this.matchCmd("SET")) { this.cmdSet(); }
+        else if (this.matchCmd("BATCH")) { this.cmdBatch(); }
+        else if (this.matchCmd("EXIT") | this.matchCmd("QUIT") | this.matchCmd("HALT")) { this.cmdHalt(); }
+        else { Output.printString("Bad command or file name."); Output.println(); }
+    }
+
+    method execBuf(extBuf: Array, extLen: int) {
+        var saveBuf: Array = this.buf; var saveLen: int = this.len;
+        this.buf = extBuf; this.len = extLen;
+        this.execCommand();
+        this.buf = saveBuf; this.len = saveLen;
+    }
+
+    method cmdHelp() {
+        Output.println();
+        Output.printString("Available commands:");
+        Output.println();
+        Output.printString("  ?  / HELP          Show this help");
+        Output.println();
+        Output.printString("  CLS                Clear the screen");
+        Output.println();
+        Output.printString("  VER                Show version info");
+        Output.println();
+        Output.printString("  ECHO <text>        Print text");
+        Output.println();
+        Output.printString("  COLOR <0-15>       Preview a color");
+        Output.println();
+        Output.println();
+        Output.printString("  --- File System ---");
+        Output.println();
+        Output.printString("  FORMAT             Format disk (erases all!)");
+        Output.println();
+        Output.printString("  DIR                List files");
+        Output.println();
+        Output.printString("  TYPE <file>        Show file contents");
+        Output.println();
+        Output.printString("  CREATE <file>      Create empty file");
+        Output.println();
+        Output.printString("  WRITE <file>       Write text to file");
+        Output.println();
+        Output.printString("  DEL <file>         Delete file");
+        Output.println();
+        Output.printString("  REN <old> <new>    Rename file");
+        Output.println();
+        Output.printString("  COPY <src> <dst>   Copy file");
+        Output.println();
+        Output.printString("  EDIT <file>        Line editor (EDLIN)");
+        Output.println();
+        Output.printString("  CHKDSK             Check disk integrity");
+        Output.println();
+        Output.printString("  BATCH <file>       Run batch file");
+        Output.println();
+        Output.println();
+        Output.printString("  --- System ---");
+        Output.println();
+        Output.printString("  PEEK <addr>        Read memory (hex)");
+        Output.println();
+        Output.printString("  POKE <addr> <val>  Write memory (hex)");
+        Output.println();
+        Output.printString("  DUMP <addr>        Hex dump 128 words");
+        Output.println();
+        Output.printString("  MEM                Memory map");
+        Output.println();
+        Output.printString("  TIME               Timer registers");
+        Output.println();
+        Output.printString("  BEEP               Play 440 Hz beep");
+        Output.println();
+        Output.printString("  SET                System variables");
+        Output.println();
+        Output.printString("  EXIT / HALT        Stop CPU");
+        Output.println();
+        Output.println();
+    }
+
+    method cmdCls() {
+        var i: int = 0;
+        while (i < 2400) { poke(0xF000 + i, 0x0720); i = i + 1; }
+        Shell.drawHeader();
+    }
+
+    method cmdVer() {
+        Output.println();
+        Output.printString("NexaOS Version 2.1");
+        Output.println();
+        Output.printString("  CPU:    Nexa-16, 64K address space");
+        Output.println();
+        Output.printString("  Video:  Text 80x30");
+        Output.println();
+        Output.printString("  RAM:    ~64KB");
+        Output.println();
+        Output.printString("  Disk:   256 sec x 128 words (32K)");
+        Output.println();
+        Output.printString("  FS:     NexaFS FAT, 16 dir entries");
+        Output.println();
+        Output.printString("  Editor: EDLIN (4K buffer)");
+        Output.println();
+        Output.println();
+    }
+
+    method cmdEcho() {
+        var i: int = this.argStart(4);
+        while (i < this.len) { Output.printChar(this.buf[i]); i = i + 1; }
+        Output.println();
+    }
+
+    method cmdColor() {
+        var astart: int = this.argStart(5);
+        if (astart >= this.len) { Output.printString("Usage: COLOR <0-15>  (preview only)"); Output.println(); return; }
+        var fg: int = this.buf[astart] - 48;
+        if ((astart + 1 < this.len) & (this.buf[astart + 1] >= 48) & (this.buf[astart + 1] <= 57)) {
+            fg = fg * 10 + (this.buf[astart + 1] - 48);
+        }
+        if ((fg < 0) | (fg > 15)) { Output.printString("Invalid color. Use 0-15."); Output.println(); return; }
+        Output.printString("  Color "); Output.printInt(fg); Output.printString(": ");
+        var attr: int = fg << 8;
+        Output.printChar(attr | 72); Output.printChar(attr | 65); Output.printChar(attr | 67);
+        Output.printChar(attr | 75); Output.printChar(attr | 68); Output.printChar(attr | 79);
+        Output.printChar(attr | 83);
+        Output.println();
+    }
+
+    method cmdDir() {
+        if (!this.requireFs()) { return; }
+        Output.println();
+        Output.printString(" Volume in drive C: NEXAOS");
+        Output.println();
+        Output.printString(" Directory of C:\\");
+        Output.println();
+        Output.println();
+        var fileCount: int = 0;
+        var totalSize: int = 0;
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) != 0) {
+                Output.printString("  ");
+                this.printDirEntry(i);
+                var sz: int = Fs.dirGet(i, 13);
+                Output.printString("    ");
+                if (sz < 10000) { Output.printChar(32); }
+                if (sz < 1000) { Output.printChar(32); }
+                if (sz < 100) { Output.printChar(32); }
+                if (sz < 10) { Output.printChar(32); }
+                Output.printInt(sz);
+                Output.printString(" bytes  [");
+                var startSec: int = Fs.dirGet(i, 12);
+                if (startSec > 0) { Output.printInt(Fs.chainLength(startSec)); }
+                else { Output.printChar(48); }
+                Output.printString(" sec]");
+                Output.println();
+                fileCount = fileCount + 1;
+                totalSize = totalSize + sz;
+            }
+            i = i + 1;
+        }
+        Output.println();
+        Output.printString("  "); Output.printInt(fileCount); Output.printString(" file(s)    ");
+        Output.printInt(totalSize); Output.printString(" bytes");
+        Output.println();
+        Output.printString("  "); Output.printInt(Fs.getFreeCount());
+        Output.printString(" sectors free ("); Output.printInt(Fs.getFreeCount() * 128);
+        Output.printString(" bytes)");
+        Output.println();
+        Output.println();
+    }
+
+    method cmdType() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(4);
+        if (astart >= this.len) { Output.printString("Usage: TYPE <filename>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("File not found."); Output.println(); return; }
+        var sz: int = Fs.dirGet(idx, 13);
+        if (sz == 0) { Output.printString("(empty file)"); Output.println(); return; }
+        Output.println();
+        var curSec: int = Fs.dirGet(idx, 12);
+        var printed: int = 0;
+        var secBuf: int = Fs.getSec();
+        while ((curSec > 0) & (curSec < 256) & (printed < sz)) {
+            Disk.read(curSec, secBuf);
+            var i: int = 0;
+            while ((i < 128) & (printed < sz)) {
+                var ch: int = peek(secBuf + i);
+                if (ch == 10) { Output.println(); }
+                else if (ch == 9) { Output.printString("    "); }
+                else if ((ch > 31) & (ch < 127)) { Output.printChar(ch); }
+                printed = printed + 1; i = i + 1;
+            }
+            var nxt: int = Fs.fatGet(curSec);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { curSec = 0; } else { curSec = nxt; }
+        }
+        Output.println();
+    }
+
+    method cmdCreate() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(6);
+        if (astart >= this.len) { Output.printString("Usage: CREATE <filename>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var result: int = this.createParsedFile();
+        if (result == -2) { Output.printString("File already exists."); Output.println(); }
+        else if (result == -1) { Output.printString("Directory full (max 16 files)."); Output.println(); }
+        else { Output.printString("Created "); this.printDirName(result); Output.println(); }
+    }
+
+    method cmdWrite() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(5);
+        if (astart >= this.len) { Output.printString("Usage: WRITE <filename>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) {
+            idx = this.createParsedFile();
+            if (idx < 0) { Output.printString("Cannot create file."); Output.println(); return; }
+            Output.printString("Created new file."); Output.println();
+        }
+        var fileSize: int = Fs.fileSize(idx);
+        var wlen: int = Fs.readFileData(idx, this.fbuf, 4000);
+        if (fileSize > 4000) {
+            Output.printString("WARNING: File has "); Output.printInt(fileSize);
+            Output.printString(" chars; only first 4000 loaded."); Output.println();
+        }
+        Output.printString("Enter text (end with . on its own line):");
+        Output.println();
+        loop {
+            Output.printString("  "); this.readLine();
+            if ((this.len == 1) & (this.buf[0] == 46)) { break; }
+            if (wlen + this.len + 1 >= 4096) {
+                Output.printString("Buffer full (max 4096 chars)!"); Output.println(); break;
+            }
+            var i: int = 0;
+            while (i < this.len) { poke(this.fbuf + wlen, this.buf[i]); wlen = wlen + 1; i = i + 1; }
+            poke(this.fbuf + wlen, 10); wlen = wlen + 1;
+        }
+        var wr: int = Fs.writeFileData(idx, this.fbuf, wlen);
+        if (wr < 0) { Output.printString("ERROR: Disk full!"); Output.println(); return; }
+        Output.printString("Saved "); Output.printInt(wlen);
+        Output.printString(" bytes to "); this.printDirName(idx); Output.println();
+    }
+
+    method cmdDel() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(3);
+        if (astart >= this.len) { Output.printString("Usage: DEL <filename>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("File not found."); Output.println(); return; }
+        Output.printString("Delete "); this.printDirName(idx); Output.printString("? (Y/N) ");
+        var key: int = Keyboard.readChar();
+        Output.printChar(key); Output.println();
+        if ((key == 89) | (key == 121)) {
+            Fs.deleteFile(idx); Output.printString("File deleted."); Output.println();
+        }
+    }
+
+    method cmdRen() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(3);
+        if (astart >= this.len) { Output.printString("Usage: REN <old> <new>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("File not found."); Output.println(); return; }
+        var pos: int = this.skipArg(astart);
+        while ((pos < this.len) & (this.buf[pos] == 32)) { pos = pos + 1; }
+        if (pos >= this.len) { Output.printString("Usage: REN <old> <new>"); Output.println(); return; }
+        if (!this.requireFilename(pos)) { return; }
+        if (this.findParsedFile() >= 0) {
+            Output.printString("Name already exists."); Output.println(); return;
+        }
+        Fs.renameFile(idx, this.pname[0], this.pname[1], this.pname[2], this.pname[3],
+            this.pname[4], this.pname[5], this.pname[6], this.pname[7],
+            this.pext[0], this.pext[1], this.pext[2]);
+        Output.printString("Renamed to "); this.printDirName(idx); Output.println();
+    }
+
+    method cmdCopy() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(4);
+        if (astart >= this.len) { Output.printString("Usage: COPY <src> <dst>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var srcIdx: int = this.findParsedFile();
+        if (srcIdx < 0) { Output.printString("Source not found."); Output.println(); return; }
+        var pos: int = this.skipArg(astart);
+        while ((pos < this.len) & (this.buf[pos] == 32)) { pos = pos + 1; }
+        if (pos >= this.len) { Output.printString("Usage: COPY <src> <dst>"); Output.println(); return; }
+        if (!this.requireFilename(pos)) { return; }
+        var dstIdx: int = this.createParsedFile();
+        if (dstIdx == -2) { Output.printString("Dest already exists."); Output.println(); return; }
+        if (dstIdx < 0) { Output.printString("Directory full."); Output.println(); return; }
+        var srcSize: int = Fs.fileSize(srcIdx);
+        var clen: int = Fs.readFileData(srcIdx, this.fbuf, 4096);
+        if (srcSize > 4096) {
+            Output.printString("WARNING: Only first 4096 chars copied."); Output.println();
+        }
+        var wr: int = Fs.writeFileData(dstIdx, this.fbuf, clen);
+        if (wr < 0) { Fs.deleteFile(dstIdx); Output.printString("ERROR: Disk full!"); Output.println(); return; }
+        Output.printString("Copied "); Output.printInt(clen); Output.printString(" bytes."); Output.println();
+    }
+
+    method cmdEdit() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(4);
+        if (astart >= this.len) { Output.printString("Usage: EDIT <filename>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) {
+            idx = this.createParsedFile();
+            if (idx < 0) { Output.printString("Cannot create file."); Output.println(); return; }
+        }
+        Editor.open(idx);
+        Output.println();
+    }
+
+    method cmdFormat() {
+        Output.println();
+        Output.printString("WARNING: Format erases ALL data on disk C:");
+        Output.println();
+        Output.printString("Proceed? (Y/N) ");
+        var key: int = Keyboard.readChar();
+        Output.printChar(key); Output.println();
+        if ((key != 89) & (key != 121)) { Output.printString("Cancelled."); Output.println(); return; }
+        Output.printString("Formatting...");
+        Fs.format();
+        Output.println();
+        Output.printString("Done. 251 data sectors, 16 dir entries.");
+        Output.println();
+        Output.printString("Created: README.TXT, AUTOEXEC.BAT");
+        Output.println();
+        Output.println();
+    }
+
+    // CHKDSK: full check including size-vs-chain verification
+    method cmdChkdsk() {
+        if (!this.requireFs()) { return; }
+        Output.println();
+        Output.printString("Checking filesystem...");
+        Output.println();
+        Output.println();
+        var fileCount: int = 0;
+        var usedSectors: int = 0;
+        var errors: int = 0;
+        var sectorUsed: int = this.fbuf;
+        var i: int = 0;
+        while (i < 256) { poke(sectorUsed + i, 0); i = i + 1; }
+        poke(sectorUsed, 1); poke(sectorUsed + 1, 1); poke(sectorUsed + 2, 1);
+        poke(sectorUsed + 3, 1); poke(sectorUsed + 4, 1);
+
+        i = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) != 0) {
+                fileCount = fileCount + 1;
+                var startSec: int = Fs.dirGet(i, 12);
+                var fileSize: int = Fs.dirGet(i, 13);
+                Output.printString("  "); this.printDirEntry(i); Output.printString("  ");
+                if (startSec > 0) {
+                    var s: int = startSec;
+                    var chainLen: int = 0;
+                    var chainOk: bool = true;
+                    while ((s > 0) & (s < 256) & (chainLen < 256)) {
+                        if (peek(sectorUsed + s) != 0) {
+                            Output.printString("ERR:cross-linked!");
+                            errors = errors + 1; chainOk = false; s = 0;
+                        } else {
+                            poke(sectorUsed + s, 1);
+                            usedSectors = usedSectors + 1;
+                            chainLen = chainLen + 1;
+                            var nxt: int = Fs.fatGet(s);
+                            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { s = 0; }
+                            else { s = nxt; }
+                        }
+                    }
+                    if (chainOk) {
+                        var expectedSec: int = 0;
+                        if (fileSize > 0) { expectedSec = ((fileSize - 1) / 128) + 1; }
+                        if (chainLen != expectedSec) {
+                            Output.printString("ERR:size/chain (");
+                            Output.printInt(chainLen); Output.printString(" vs ");
+                            Output.printInt(expectedSec); Output.printChar(41);
+                            errors = errors + 1;
+                        } else {
+                            Output.printString("OK ("); Output.printInt(chainLen);
+                            Output.printString(" sec)");
+                        }
+                    }
+                } else {
+                    if (fileSize > 0) { Output.printString("ERR:no start!"); errors = errors + 1; }
+                    else { Output.printString("OK (empty)"); }
+                }
+                Output.println();
+            }
+            i = i + 1;
+        }
+
+        var lostSectors: int = 0;
+        i = 5;
+        while (i < 256) {
+            if ((Fs.fatGet(i) != 0) & (peek(sectorUsed + i) == 0)) { lostSectors = lostSectors + 1; }
+            i = i + 1;
+        }
+        var freeSectors: int = 0;
+        i = 5;
+        while (i < 256) { if (Fs.fatGet(i) == 0) { freeSectors = freeSectors + 1; } i = i + 1; }
+
+        Output.println();
+        Output.printString("  Files: "); Output.printInt(fileCount); Output.println();
+        Output.printString("  Used:  "); Output.printInt(usedSectors);
+        Output.printString(" sectors (+ 5 reserved)"); Output.println();
+        Output.printString("  Free:  "); Output.printInt(freeSectors); Output.println();
+        if (lostSectors > 0) {
+            Output.printString("  Lost:  "); Output.printInt(lostSectors);
+            Output.printString(" (orphaned in FAT)"); Output.println();
+            errors = errors + lostSectors;
+        }
+        Output.printString("  Errors: "); Output.printInt(errors); Output.println();
+        if (errors == 0) { Output.printString("  Filesystem is clean."); }
+        else { Output.printString("  Filesystem has issues."); }
+        Output.println(); Output.println();
+    }
+
+    method cmdPeek() {
+        var astart: int = this.argStart(4);
+        var addr: int = this.parseHex(astart);
+        Output.printString("  [0x"); this.printHex(addr); Output.printString("] = 0x");
+        this.printHex(peek(addr)); Output.printString(" ("); Output.printInt(peek(addr));
+        Output.printChar(41); Output.println();
+    }
+
+    method cmdPoke() {
+        var i: int = this.argStart(4);
+        var addr: int = this.parseHex(i);
+        while ((i < this.len) & (this.buf[i] != 32)) { i = i + 1; }
+        var val: int = this.parseHex(i);
+        poke(addr, val);
+        Output.printString("  0x"); this.printHex(val); Output.printString(" -> [0x");
+        this.printHex(addr); Output.printChar(93); Output.println();
+    }
+
+    method cmdDump() {
+        var astart: int = this.argStart(4);
+        var addr: int = this.parseHex(astart);
+        Output.println();
+        var row: int = 0;
+        while (row < 8) {
+            Output.printString("  "); this.printHex(addr + (row * 16)); Output.printString(": ");
+            var col: int = 0;
+            while (col < 16) { this.printHex(peek(addr + (row * 16) + col)); Output.printChar(32); col = col + 1; }
+            Output.println();
+            row = row + 1;
+        }
+        Output.println();
+    }
+
+    method cmdMem() {
+        Output.println();
+        Output.printString("  Nexa-16 Memory Map (64K words):");
+        Output.println();
+        Output.printString("  0x0000-0x000F  System reserved");
+        Output.println();
+        Output.printString("  0x0010-0x00FF  Static variables");
+        Output.println();
+        Output.printString("  0x0100-0xEFEF  Heap (grows up)");
+        Output.println();
+        Output.printString("  0xEFF0-0xEFFF  Stack (grows down)");
+        Output.println();
+        Output.printString("  0xF000-0xF95F  Framebuffer (80x30)");
+        Output.println();
+        Output.printString("  0xFF00-0xFF53  I/O devices");
+        Output.println();
+        Output.printString("  0xFFF0-0xFFF1  Interrupt controller");
+        Output.println();
+        Output.printString("  Heap next alloc: 0x");
+        this.printHex(peek(0xEFF1));
+        Output.printString(" (bump allocator at 0xEFF1)");
+        Output.println();
+        Output.println();
+    }
+
+    method cmdTime() {
+        Output.println();
+        Output.printString("  Timer ctrl: 0x"); this.printHex(peek(0xFF10)); Output.println();
+        Output.printString("  Interval:   "); Output.printInt(peek(0xFF11)); Output.println();
+        Output.printString("  Counter:    "); Output.printInt(peek(0xFF12)); Output.println();
+        Output.println();
+    }
+
+    method cmdBeep() {
+        poke(0xFF40, 2273);
+        poke(0xFF41, 8 | (12 << 4));
+        Sys.wait(250);
+        poke(0xFF41, 0);
+        Output.printString("  *BEEP* (440 Hz, 250 ms)");
+        Output.println();
+    }
+
+    method cmdSet() {
+        Output.println();
+        Output.printString("  System variables (read-only):");
+        Output.println();
+        Output.printString("  OS=NexaOS  VERSION=2.1  CPU=Nexa-1616");
+        Output.println();
+        Output.printString("  DISPLAY=TEXT80x30  DISK=256x128w");
+        Output.println();
+        Output.printString("  FS=NexaFS");
+        if (Fs.isMounted()) {
+            Output.printString("  STATUS=mounted  FREE=");
+            Output.printInt(Fs.getFreeCount());
+        } else { Output.printString("  STATUS=unmounted"); }
+        Output.println();
+        Output.println();
+    }
+
+    method cmdBatch() {
+        if (!this.requireFs()) { return; }
+        var astart: int = this.argStart(5);
+        if (astart >= this.len) { Output.printString("Usage: BATCH <file>"); Output.println(); return; }
+        if (!this.requireFilename(astart)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("Batch file not found."); Output.println(); return; }
+        this.runBatchFile(idx);
+    }
+
+    // Batch execution with recursion guard (max depth 4)
+    method runBatchFile(idx: int) {
+        if (batchDepth >= 4) {
+            Output.printString("ERROR: Batch nesting too deep (max 4)."); Output.println(); return;
+        }
+        var sz: int = Fs.fileSize(idx);
+        if (sz == 0) { return; }
+        batchDepth = batchDepth + 1;
+        var blen: int = Fs.readFileData(idx, this.fbuf, 4096);
+        if (sz > 4096) {
+            Output.printString("WARNING: Batch truncated at 4096."); Output.println();
+        }
+        var lineBuf: Array = Array.new(82);
+        var pos: int = 0;
+        while (pos < blen) {
+            var lineLen: int = 0;
+            while ((pos < blen) & (peek(this.fbuf + pos) != 10) & (lineLen < 80)) {
+                lineBuf[lineLen] = peek(this.fbuf + pos);
+                lineLen = lineLen + 1; pos = pos + 1;
+            }
+            if ((pos < blen) & (peek(this.fbuf + pos) == 10)) { pos = pos + 1; }
+            if (lineLen > 0) {
+                Output.printChar(0x0A00 | 67); Output.printChar(0x0A00 | 58);
+                Output.printChar(0x0A00 | 92); Output.printChar(0x0A00 | 62);
+                Output.printChar(32);
+                var k: int = 0;
+                while (k < lineLen) { Output.printChar(lineBuf[k]); k = k + 1; }
+                Output.println();
+                this.execBuf(lineBuf, lineLen);
+            }
+        }
+        lineBuf.dispose();
+        batchDepth = batchDepth - 1;
+    }
+
+    method cmdHalt() {
+        Output.println();
+        Output.printString("System halted. Goodbye!");
+        Output.println();
+        halt();
+    }
+}

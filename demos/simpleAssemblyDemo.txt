@@ -1,0 +1,125 @@
+; NEXA-16 DEMO: "Classic Rasterbars & Arp"
+; Kompatibel med NexaOS v4
+; ---------------------------------------------------------
+
+.ORG 0
+boot:
+    ; 1. Initialiser Stack (Må settes over data for å unngå krasj)
+    LDA SP, 0xEBFF       
+
+    ; 2. Initialiser Skjerm til Pixel Mode (160x120)
+    LDA A, 0xFF30        ; Display Controller adresse
+    LDI D, 1             ; 1 = Pixel mode
+    STORE D, [A]
+
+    ; 3. Initialiser Lyd (Ch0 og Ch1)
+    ; V4 ref sier formatet er: [9:8]=wave, [7:4]=vol, [3]=enable
+    ; Vi vil ha: Bølge 0 (firkant), Volum 9, Enable 1 -> 0b10011000 = 0x98
+    LDA A, 0xFF40        ; Sound Controller adresse
+    LDI D, 0x98          
+    STORE D, [A+1]       ; Ch0 Ctrl
+    STORE D, [A+3]       ; Ch1 Ctrl
+
+    ; 4. Initialiser Frame Counter i RAM
+    LDA A, 0x1000
+    CLR D
+    STORE D, [A]
+
+frame_loop:
+    ; --- OPPDATER FRAME COUNTER ---
+    LDA A, 0x1000
+    LOAD D, [A]
+    PUSH B               ; Beskytt B-registeret
+    LDI B, 1
+    ADD D, B             ; D = D + 1 (Manuelt, unngår INC-bugs)
+    POP B
+    STORE D, [A]
+
+    ; --- GENERATIVT LYDSPOR ---
+    LDA A, 0xFF40
+    
+    ; Ch0 (Bass): Tregt skiftende frekvens
+    MOV B, D             ; Kopier frame counter til B
+    ASR B
+    ASR B                ; Shift høyre to ganger for å senke farten
+    PUSH D
+    LDA D, 150           ; Base frekvens
+    ADD B, D             
+    POP D
+    STORE B, [A]         ; Ch0 Freq
+    
+    ; Ch1 (Melodi / Arp): Raskt skiftende frekvens
+    MOV B, D             
+    SHL B                ; Shift venstre for raskere endring
+    PUSH D
+    LDA D, 400
+    ADD B, D
+    POP D
+    STORE B, [A+2]       ; Ch1 Freq
+
+    ; --- RASTERBAR TEGNING ---
+    LDA A, 0xEC00        ; Start av VRAM
+
+draw_loop:
+    PUSH A               ; [Stack: VRAM_PTR]
+
+    ; Beregn farge basert på (Minneadresse + Frame)
+    LDA A, 0x1000
+    LOAD D, [A]          ; D = Frame
+    POP A                ; Hent VRAM_PTR tilbake
+    PUSH A               ; Lagre den igjen umiddelbart
+
+    ADD D, A             ; D = Adresse + Frame
+    ASR D
+    ASR D
+    ASR D
+    ASR D                ; Tykkere horisontale fargebånd
+
+    ; Isoler CGA farge (0-15)
+    PUSH B
+    LDI B, 15            ; 0x0F
+    AND D, B             ; D = Fargeindeks
+    
+    ; V4 Ref krever 4 piksler per ord i Pixel Mode.
+    ; Pakk fargen inn 4 ganger: D | (D<<4) | (D<<8) | (D<<12)
+    MOV B, D
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    OR D, B              ; D har nå 2 piksler
+    MOV B, D
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    SHL B
+    OR D, B              ; D har nå 4 identiske piksler
+    POP B
+
+    ; Skriv pikslene til skjermen
+    POP A                ; [Stack: tom] A = VRAM_PTR
+    STORE D, [A]         
+
+    ; Øk VRAM-peker
+    PUSH B
+    LDI B, 1
+    ADD A, B
+    POP B
+
+    ; Sjekk om vi har nådd slutten av VRAM (0xFEC0)
+    PUSH D
+    PUSH B
+    MOV B, A             ; B = Nåværende VRAM adresse
+    LDA D, 0xFEC0        ; D = Slutten av aktiv VRAM
+    SUB B, D             ; Trekk fra hverandre for å sette flagg (B = B - D)
+    POP B
+    POP D
+    BRNZ draw_loop       ; Branch hvis Not Zero (vi er ikke på 0xFEC0 enda)
+
+    ; Frame er ferdig, hopp til start
+    LDA A, frame_loop
+    JMP

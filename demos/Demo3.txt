@@ -1,0 +1,552 @@
+// ============================================================
+// NEXA-16 DEMOSCENE DEMO — "RECURSIVE NIGHTMARES"
+//
+// Four-part graphical journey with a chiptune soundtrack.
+//
+//   Part I   · RASTER BARS    (200 frames)
+//   Part II  · WARP STARFIELD (300 frames)
+//   Part III · INFERNO        (200 frames, fire + stars)
+//   Part IV  · PLASMA STORM   (300 frames)
+//
+// Display: 160x120, 4-bit color, pixel mode.
+// Framebuffer: 0xEC00–0xFEBF (signed -5120 .. -321), 4800 words.
+// 4 pixels per word: bits 15..12 = p0, 11..8 = p1, 7..4 = p2, 3..0 = p3.
+// ============================================================
+
+class Main {
+
+    // ── Lookup tables ─────────────────────────────────────────
+    static sinTab:  Array;  // [256]  sin8, values -127..127
+    static normTab: Array;  // [512]  (i>>5)&15, color normalizer
+    static sumHeat: Array;  // [46]   fire propagation: max(0, s/3-1)
+    static c12tab:  Array;  // [16]   i<<12  (fast pixel packing)
+    static c8tab:   Array;  // [16]   i<<8
+    static c4tab:   Array;  // [16]   i<<4
+
+    // ── Effect state ──────────────────────────────────────────
+    static fireBuf: Array;  // [6400] heat grid 160×40 (rows 0-39 of fire)
+    static starX:   Array;  // [64]
+    static starY:   Array;  // [64]
+    static starZ:   Array;  // [64]   depth (1..63); 1 = near, 63 = far
+
+    // ── Music data ────────────────────────────────────────────
+    static melody:  Array;  // [16]  lead, periods in Nexa-16 time units
+    static bass:    Array;  // [8]   bass line
+    static arpSeq:  Array;  // [6]   arpeggio
+
+    // ── RNG ───────────────────────────────────────────────────
+    static seed: int;
+
+
+    // ============================================================
+    // INITIALIZATION
+    // ============================================================
+
+    fn initTables() {
+        var i: int;
+        var q: int;
+        var s: int;
+
+        // ── Sine table (256 entries, range -127..127) ──────────
+        // First quarter via parabolic approximation:
+        //   sin(i·π/128) ≈ i*(128-i) >> 5   for i = 0..64
+        sinTab = Array.new(256);
+        i = 0;
+        while (i < 65) {
+            q = (i * (128 - i));
+            s = (q >> 5);
+            if (s > 127) { s = 127; }
+            sinTab[i] = s;
+            i = i + 1;
+        }
+        // Second quarter: symmetric around index 64
+        i = 1;
+        while (i < 64) {
+            sinTab[64 + i] = sinTab[64 - i];
+            i = i + 1;
+        }
+        // Lower half: negate upper half
+        i = 0;
+        while (i < 128) {
+            sinTab[128 + i] = -sinTab[i];
+            i = i + 1;
+        }
+
+        // ── Norm table: sin-sum+254 → color 0-15 ──────────────
+        // Two sin8 values sum to -254..254; adding 254 gives 0..508.
+        // normTab[(sum+254)] = (sum+254)>>5 & 15 = color 0..15.
+        normTab = Array.new(512);
+        i = 0;
+        while (i < 512) {
+            normTab[i] = ((i >> 5) & 15);
+            i = i + 1;
+        }
+
+        // ── Fire heat table: sumHeat[s] = max(0, s/3 - 1) ─────
+        // s = sum of three adjacent heat cells (0..45).
+        // Divides by 3 (slight cooling) then subtracts 1 (more cooling).
+        sumHeat = Array.new(46);
+        i = 0;
+        while (i < 46) {
+            s = ((i / 3) - 1);
+            if (s < 0) { s = 0; }
+            sumHeat[i] = s;
+            i = i + 1;
+        }
+
+        // ── Pixel-packing shift tables ─────────────────────────
+        c12tab = Array.new(16);
+        c8tab  = Array.new(16);
+        c4tab  = Array.new(16);
+        i = 0;
+        while (i < 16) {
+            c12tab[i] = Math.shiftLeft(i, 12);
+            c8tab[i]  = Math.shiftLeft(i, 8);
+            c4tab[i]  = Math.shiftLeft(i, 4);
+            i = i + 1;
+        }
+    }
+
+    fn initMusic() {
+        // ── Lead melody: C major, 16 steps ────────────────────
+        // Periods approximate: C5=76, E5=68, G5=61, A4=91, B5=54,
+        //                      G4=102, C4=152, E4=121
+        melody = Array.new(16);
+        melody[0]  = 76;
+        melody[1]  = 68;
+        melody[2]  = 61;
+        melody[3]  = 76;
+        melody[4]  = 91;
+        melody[5]  = 61;
+        melody[6]  = 68;
+        melody[7]  = 54;
+        melody[8]  = 102;
+        melody[9]  = 76;
+        melody[10] = 68;
+        melody[11] = 61;
+        melody[12] = 54;
+        melody[13] = 68;
+        melody[14] = 76;
+        melody[15] = 91;
+
+        // ── Bass line: 8-step chord walk ──────────────────────
+        // C3=304, G3=204, F3=228, D3=271
+        bass = Array.new(8);
+        bass[0] = 304;
+        bass[1] = 304;
+        bass[2] = 204;
+        bass[3] = 204;
+        bass[4] = 228;
+        bass[5] = 228;
+        bass[6] = 204;
+        bass[7] = 271;
+
+        // ── Arpeggio: ascending C major ────────────────────────
+        arpSeq = Array.new(6);
+        arpSeq[0] = 152;
+        arpSeq[1] = 121;
+        arpSeq[2] = 102;
+        arpSeq[3] = 76;
+        arpSeq[4] = 68;
+        arpSeq[5] = 61;
+    }
+
+    fn initStars() {
+        var i: int;
+        starX = Array.new(64);
+        starY = Array.new(64);
+        starZ = Array.new(64);
+        i = 0;
+        while (i < 64) {
+            starX[i] = ((Main.rand() & 127) - 64);
+            starY[i] = ((Main.rand() & 63)  - 32);
+            starZ[i] = ((Main.rand() & 63)  + 1);
+            i = i + 1;
+        }
+    }
+
+    fn initFire() {
+        var i: int;
+        fireBuf = Array.new(6400);
+        i = 0;
+        while (i < 6400) {
+            fireBuf[i] = 0;
+            i = i + 1;
+        }
+    }
+
+
+    // ============================================================
+    // PRIMITIVES
+    // ============================================================
+
+    fn rand() -> int {
+        seed = (seed ^ Math.shiftLeft(seed, 7));
+        seed = (seed ^ Math.shiftRight(seed, 9));
+        seed = (seed ^ Math.shiftLeft(seed, 8));
+        seed = (seed & 32767);
+        if (seed == 0) { seed = 1; }
+        return seed;
+    }
+
+    // Pack four 4-bit colors into one framebuffer word.
+    fn pack4(c0: int, c1: int, c2: int, c3: int) -> int {
+        return (c12tab[c0] | c8tab[c1] | c4tab[c2] | c3);
+    }
+
+    // Fill entire framebuffer with black.
+    fn wipeScreen() {
+        var addr: int;
+        addr = -5120;
+        while (addr < -320) {
+            poke(addr, 0);
+            addr = addr + 1;
+        }
+    }
+
+    // Write one pixel at (x, y) with color c (0..15).
+    fn setPixel(x: int, y: int, c: int) {
+        var addr: int;
+        var word: int;
+        var slot: int;
+        addr  = (-5120 + (y * 40) + (x >> 2));
+        slot  = (x & 3);
+        word  = peek(addr);
+        if (slot == 0) {
+            word = ((word &  4095) | c12tab[c]);
+        } else {
+            if (slot == 1) {
+                word = ((word & -3841) | c8tab[c]);
+            } else {
+                if (slot == 2) {
+                    word = ((word &  -241) | c4tab[c]);
+                } else {
+                    word = ((word &   -16) | c);
+                }
+            }
+        }
+        poke(addr, word);
+    }
+
+
+    // ============================================================
+    // MUSIC
+    // ============================================================
+
+    fn updateMusic(frame: int) {
+        var pos: int;
+
+        // Channel 0 — Lead melody, square wave, every 8 frames, 16-step loop
+        if ((frame & 7) == 0) {
+            pos = ((frame >> 3) & 15);
+            Sound.setVoice(0, melody[pos], 10, 1);
+        }
+
+        // Channel 1 — Bass, sawtooth, every 32 frames, 8-step loop
+        if ((frame & 31) == 0) {
+            pos = ((frame >> 5) & 7);
+            Sound.setVoice(1, bass[pos], 7, 2);
+        }
+
+        // Channel 2 — Auxiliary arpeggio, triangle, every 3 frames, 6-step loop.
+        if ((frame % 3) == 0) {
+            pos = ((frame / 3) % 6);
+            Sound.setVoice(2, arpSeq[pos], 5, 3);
+        }
+    }
+
+
+    // ============================================================
+    // EFFECT I · RASTER BARS
+    //
+    // Two overlapping sine-wave color sweeps scroll vertically.
+    // The sum of both waves drives the 4-bit color index, producing
+    // rich interference patterns that pulse and shimmer over time.
+    // ============================================================
+
+    fn drawBars(t: int) {
+        var y:      int;
+        var sa:     int;
+        var t2:     int;
+        var v:      int;
+        var color:  int;
+        var packed: int;
+        var x:      int;
+
+        t2 = (t + t);
+        sa = -5120;
+        y  = 0;
+        while (y < 120) {
+            // Wave 1: period 256 in both t and y
+            // Wave 2: double speed in t, double amplitude in y
+            v = (sinTab[((t  + y)       & 255)] +
+                 sinTab[((t2 + y + y)   & 255)] + 254);
+            // v in 0..508 → color 0..15
+            color  = ((v >> 5) & 15);
+            packed = Main.pack4(color, color, color, color);
+            x = 0;
+            while (x < 40) {
+                poke(sa, packed);
+                sa = sa + 1;
+                x  = x  + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+
+    // ============================================================
+    // EFFECT II & III · PERSPECTIVE STARFIELD
+    //
+    // 64 stars fly toward the viewer (z decrements each frame).
+    // Projection: ox = 80 + (sx*80)/z,  oy = 60 + (sy*60)/z.
+    // Brightness = 15 - z/4; near stars are white, far ones gray.
+    // Each star is erased then redrawn, leaving a clean trail-free
+    // field on a black background; in Part III it overlaps fire.
+    // ============================================================
+
+    fn stepStars() {
+        var i:  int;
+        var ox: int;
+        var oy: int;
+        var c:  int;
+        var z:  int;
+
+        i = 0;
+        while (i < 64) {
+            z = starZ[i];
+
+            // Erase old position
+            ox = (80 + ((starX[i] * 80) / z));
+            oy = (60 + ((starY[i] * 60) / z));
+            if ((ox > 0) & (ox < 159) & (oy > 0) & (oy < 119)) {
+                Main.setPixel(ox, oy, 0);
+            }
+
+            // Advance star toward viewer
+            starZ[i] = (z - 1);
+            if (starZ[i] < 1) {
+                // Recycle at far distance with new random position
+                starZ[i] = 63;
+                starX[i] = ((Main.rand() & 127) - 64);
+                starY[i] = ((Main.rand() & 63)  - 32);
+            }
+            z = starZ[i];
+
+            // Draw at new position with depth-based brightness
+            ox = (80 + ((starX[i] * 80) / z));
+            oy = (60 + ((starY[i] * 60) / z));
+            if ((ox > 0) & (ox < 159) & (oy > 0) & (oy < 119)) {
+                c = (15 - (z >> 2));
+                if (c < 1) { c = 1; }
+                Main.setPixel(ox, oy, c);
+            }
+
+            i = i + 1;
+        }
+    }
+
+
+    // ============================================================
+    // EFFECT III · FIRE
+    //
+    // Cellular-automaton fire in a 160×40 heat buffer mapped to
+    // screen rows 80-119.  Each frame:
+    //   1. Bottom row (row 39) is seeded with random heat 8..15.
+    //   2. All other rows propagate upward: each cell becomes
+    //      sumHeat[left + center + right from the row below],
+    //      i.e. the average of three neighbors minus 1 (cooling).
+    //   3. The buffer is rendered to the screen via heatToColor.
+    // ============================================================
+
+    fn heatToColor(h: int) -> int {
+        if (h < 1)  { return 0;  }   // black   (cold)
+        if (h < 3)  { return 1;  }   // dark red
+        if (h < 6)  { return 4;  }   // red
+        if (h < 9)  { return 6;  }   // orange
+        if (h < 12) { return 14; }   // yellow
+        return 15;                    // white   (hottest)
+    }
+
+    fn stepFire() {
+        var rowStart: int;
+        var col:      int;
+        var idx:      int;
+        var bL:       int;
+        var bC:       int;
+        var bR:       int;
+
+        // Seed bottom row (row 39 → buffer index 6240..6399)
+        rowStart = 6240;
+        col = 0;
+        while (col < 160) {
+            fireBuf[rowStart + col] = ((Main.rand() & 7) + 8);
+            col = col + 1;
+        }
+
+        // Propagate upward: row 38 → row 0
+        rowStart = 6080;
+        while (rowStart >= 0) {
+            col = 0;
+            while (col < 160) {
+                idx = (rowStart + col);
+                bC  = fireBuf[idx + 160];
+                if (col > 0) {
+                    bL = fireBuf[idx + 159];
+                } else {
+                    bL = bC;
+                }
+                if (col < 159) {
+                    bR = fireBuf[idx + 161];
+                } else {
+                    bR = bC;
+                }
+                fireBuf[idx] = sumHeat[(bC + bL + bR)];
+                col = col + 1;
+            }
+            rowStart = (rowStart - 160);
+        }
+    }
+
+    fn drawFire() {
+        var sa:  int;
+        var bi:  int;
+        var row: int;
+        var col: int;
+        var h0:  int;
+        var h1:  int;
+        var h2:  int;
+        var h3:  int;
+
+        // Screen rows 80-119: addr = -5120 + 80*40 = -1920
+        sa  = -1920;
+        bi  = 0;
+        row = 0;
+        while (row < 40) {
+            col = 0;
+            while (col < 40) {
+                h0 = Main.heatToColor(fireBuf[bi]);
+                h1 = Main.heatToColor(fireBuf[bi + 1]);
+                h2 = Main.heatToColor(fireBuf[bi + 2]);
+                h3 = Main.heatToColor(fireBuf[bi + 3]);
+                poke(sa, Main.pack4(h0, h1, h2, h3));
+                sa = sa + 1;
+                bi = bi + 4;
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+
+
+    // ============================================================
+    // EFFECT IV · PLASMA STORM
+    //
+    // Classic two-layer sine plasma:
+    //   vy = sin8(y + t)            — vertical wave, changes with t
+    //   vx = sin8(x + t/2)          — horizontal wave, half speed
+    //   color = normTab[vy + vx + 254]
+    //
+    // No multiply or divide in the inner loop — only array lookups
+    // and additions.  Per-row: one sin8 lookup.  Per word (4 px):
+    // four sin8 lookups + four normTab lookups + one pack4 + poke.
+    // ============================================================
+
+    fn drawPlasma(t: int) {
+        var y:      int;
+        var wx:     int;
+        var sa:     int;
+        var vy:     int;
+        var a0:     int;
+        var xAngle: int;
+        var tHalf:  int;
+        var c0:     int;
+        var c1:     int;
+        var c2:     int;
+        var c3:     int;
+
+        tHalf  = ((t >> 1) & 255);
+        sa     = -5120;
+        y      = 0;
+        while (y < 120) {
+            vy     = sinTab[((y + t) & 255)];
+            xAngle = tHalf;
+            wx     = 0;
+            while (wx < 40) {
+                a0 = (xAngle & 255);
+                c0 = normTab[(vy + sinTab[a0]               + 254)];
+                c1 = normTab[(vy + sinTab[((a0 + 1) & 255)] + 254)];
+                c2 = normTab[(vy + sinTab[((a0 + 2) & 255)] + 254)];
+                c3 = normTab[(vy + sinTab[((a0 + 3) & 255)] + 254)];
+                poke(sa, Main.pack4(c0, c1, c2, c3));
+                sa     = sa     + 1;
+                xAngle = ((xAngle + 4) & 255);
+                wx     = wx     + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+
+    // ============================================================
+    // MAIN
+    // ============================================================
+
+    fn main() {
+        var frame: int;
+
+        // Switch to 160×120 pixel mode
+        poke(0xFF30, 1);
+
+        // Global init
+        seed = 31337;
+        Main.initTables();
+        Main.initMusic();
+
+        // ── PART I: RASTER BARS ───────────────────────────────
+        Main.wipeScreen();
+        frame = 0;
+        while (frame < 200) {
+            Main.updateMusic(frame);
+            Main.drawBars(frame);
+            frame = frame + 1;
+        }
+
+        // ── PART II: WARP STARFIELD ───────────────────────────
+        Main.wipeScreen();
+        Main.initStars();
+        frame = 0;
+        while (frame < 300) {
+            Main.updateMusic(frame);
+            Main.stepStars();
+            frame = frame + 1;
+        }
+
+        // ── PART III: INFERNO ─────────────────────────────────
+        // Fire burns across the bottom half (rows 80-119).
+        // Stars continue to fly through the full screen —
+        // those that enter the fire zone glow like embers.
+        Main.wipeScreen();
+        Main.initFire();
+        frame = 0;
+        while (frame < 200) {
+            Main.updateMusic(frame);
+            Main.stepFire();
+            Main.drawFire();
+            Main.stepStars();
+            frame = frame + 1;
+        }
+
+        // ── PART IV: PLASMA STORM ─────────────────────────────
+        Main.wipeScreen();
+        frame = 0;
+        while (frame < 300) {
+            Main.updateMusic(frame);
+            Main.drawPlasma(frame);
+            frame = frame + 1;
+        }
+
+        Sound.silence();
+        halt();
+    }
+}

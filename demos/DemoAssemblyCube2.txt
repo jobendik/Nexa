@@ -1,0 +1,582 @@
+; ------------------------------------------------------------
+; Nexa-16 rotating wireframe cube demo
+; Loops forever, slower, with both horizontal and vertical spin.
+; ------------------------------------------------------------
+
+.EQU FB_BASE       0xEC00
+.EQU DISPLAY_BASE  0xFF30
+.EQU TIMER_BASE    0xFF10
+.EQU SYS_BASE      0xFFF0
+
+.EQU FRAME_COUNT   16
+.EQU EDGE_COUNT    12
+
+; Increase this further if it still feels too fast.
+.EQU FRAME_TICKS   100000
+
+; ------------------------------------------------------------
+; Vectors
+; ------------------------------------------------------------
+
+.ORG 0
+    LDA A, main
+    JMP
+
+.ORG 4
+    HALT
+
+.ORG 8
+    HALT
+
+.ORG 12
+    HALT
+
+; ------------------------------------------------------------
+; Main
+; ------------------------------------------------------------
+
+main:
+    ; Safe stack location just below VRAM
+    LDA SP, 0xEBFF
+
+    ; Pixel mode
+    LDA A, DISPLAY_BASE
+    LDI D, 1
+    STORE D, [A]
+
+    ; frameIndex = 0
+    LDA A, frameIndex
+    CLR D
+    STORE D, [A]
+
+mainLoop:
+    ; Clear framebuffer
+    LDA A, clearScreen
+    CALL
+
+    ; framePtr = frames + frameIndex*16
+    ; (8 vertices * 2 words each = 16 words per frame)
+    LDA A, frameIndex
+    LOAD D, [A]
+    SHL D
+    SHL D
+    SHL D
+    SHL D              ; D = frameIndex * 16
+    LDA B, frames
+    ADD D, B
+    LDA A, framePtr
+    STORE D, [A]
+
+    ; Draw all 12 edges for current frame
+    LDA A, drawCubeFrame
+    CALL
+
+    ; Wait one animation tick
+    LDA A, waitFrame
+    CALL
+
+    ; frameIndex++
+    LDA A, frameIndex
+    LOAD D, [A]
+    INC D
+    LDI B, FRAME_COUNT
+    CMP D, B
+    BRZ resetFrameIndex
+    LDA A, frameIndex
+    STORE D, [A]
+    BRA mainLoop
+
+resetFrameIndex:
+    CLR D
+    LDA A, frameIndex
+    STORE D, [A]
+    BRA mainLoop
+
+; ------------------------------------------------------------
+; clearScreen
+; fills all 4800 words in pixel framebuffer with 0x0000
+; ------------------------------------------------------------
+
+clearScreen:
+    LDA A, FB_BASE
+    CLR D
+    LDA B, 4800
+
+.cs_loop:
+    STORE D, [A]
+
+    PUSH B
+    LDI B, 1
+    ADD A, B
+    POP B
+
+    DEC B
+    BRP .cs_loop
+    RET
+
+; ------------------------------------------------------------
+; waitFrame
+; Poll timer pending bit 0 instead of using interrupts.
+; ------------------------------------------------------------
+
+waitFrame:
+    ; Clear any stale timer pending bit
+    LDA A, SYS_BASE
+    LDI D, 1
+    STORE D, [A]
+
+    ; Program interval (writing interval resets counter)
+    LDA A, TIMER_BASE
+    LDA D, FRAME_TICKS
+    STORE D, [A+1]
+
+    ; Enable timer
+    LDI D, 1
+    STORE D, [A]
+
+.wf_poll:
+    LDA A, SYS_BASE
+    LOAD D, [A]
+    LDI B, 1
+    AND D, B
+    BRZ .wf_poll
+
+    ; Clear timer pending bit
+    LDI D, 1
+    STORE D, [A]
+
+    ; Disable timer
+    LDA A, TIMER_BASE
+    CLR D
+    STORE D, [A]
+    RET
+
+; ------------------------------------------------------------
+; drawCubeFrame
+; Uses framePtr and edges table.
+; ------------------------------------------------------------
+
+drawCubeFrame:
+    ; edgePtr = edges
+    LDA A, edgePtr
+    LDA D, edges
+    STORE D, [A]
+
+    ; edgeCount = 12
+    LDA A, edgeCount
+    LDI D, EDGE_COUNT
+    STORE D, [A]
+
+.dcf_loop:
+    ; idx0
+    LDA A, edgePtr
+    LOAD A, [A]
+    LOAD D, [A]
+    LDA A, getVertex
+    CALL
+    LDA A, lineX0
+    STORE D, [A]
+    LDA A, lineY0
+    STORE B, [A]
+
+    ; idx1
+    LDA A, edgePtr
+    LOAD A, [A]
+    LOAD D, [A+1]
+    LDA A, getVertex
+    CALL
+    LDA A, lineX1
+    STORE D, [A]
+    LDA A, lineY1
+    STORE B, [A]
+
+    ; draw line
+    LDA A, drawLine
+    CALL
+
+    ; edgePtr += 2
+    LDA A, edgePtr
+    LOAD D, [A]
+    LDI B, 2
+    ADD D, B
+    LDA A, edgePtr
+    STORE D, [A]
+
+    ; edgeCount--
+    LDA A, edgeCount
+    LOAD D, [A]
+    DEC D
+    LDA A, edgeCount
+    STORE D, [A]
+    BRP .dcf_loop
+
+    RET
+
+; ------------------------------------------------------------
+; getVertex
+; Input : D = vertex index 0..7
+; Output: D = x, B = y
+; framePtr points to current frame
+; ------------------------------------------------------------
+
+getVertex:
+    SHL D                  ; index * 2
+    LDA A, framePtr
+    LOAD B, [A]            ; B = base of current frame
+    ADD D, B               ; D = address of x
+    MOV A, D
+    LOAD D, [A]            ; x
+    LOAD B, [A+1]          ; y
+    RET
+
+; ------------------------------------------------------------
+; drawLine
+; Integer Bresenham.
+; Uses lineX0,lineY0,lineX1,lineY1 globals.
+; ------------------------------------------------------------
+
+drawLine:
+    ; dx and sx
+    LDA A, lineX1
+    LOAD D, [A]
+    LDA A, lineX0
+    LOAD B, [A]
+    SUB D, B               ; D = x1 - x0
+    BRN .dl_xneg
+
+    LDA A, dx
+    STORE D, [A]
+    LDA A, sx
+    LDI D, 1
+    STORE D, [A]
+    BRA .dl_xdone
+
+.dl_xneg:
+    NEG D
+    LDA A, dx
+    STORE D, [A]
+    LDA A, sx
+    LDI D, -1
+    STORE D, [A]
+
+.dl_xdone:
+    ; dy and sy
+    LDA A, lineY1
+    LOAD D, [A]
+    LDA A, lineY0
+    LOAD B, [A]
+    SUB D, B               ; D = y1 - y0
+    BRN .dl_yneg
+
+    LDA A, dy
+    STORE D, [A]
+    LDA A, sy
+    LDI D, 1
+    STORE D, [A]
+    BRA .dl_ydone
+
+.dl_yneg:
+    NEG D
+    LDA A, dy
+    STORE D, [A]
+    LDA A, sy
+    LDI D, -1
+    STORE D, [A]
+
+.dl_ydone:
+    ; err = dx - dy
+    LDA A, dx
+    LOAD D, [A]
+    LDA A, dy
+    LOAD B, [A]
+    SUB D, B
+    LDA A, err
+    STORE D, [A]
+
+.dl_loop:
+    ; plot current point
+    LDA A, lineX0
+    LOAD D, [A]
+    LDA A, lineY0
+    LOAD B, [A]
+    LDA A, plotPixel
+    CALL
+
+    ; if x0 == x1 and y0 == y1 => done
+    LDA A, lineX0
+    LOAD D, [A]
+    LDA A, lineX1
+    LOAD B, [A]
+    SUB D, B
+    BRNP .dl_not_done
+
+    LDA A, lineY0
+    LOAD D, [A]
+    LDA A, lineY1
+    LOAD B, [A]
+    SUB D, B
+    BRNP .dl_not_done
+
+    RET
+
+.dl_not_done:
+    ; e2 = err * 2
+    LDA A, err
+    LOAD D, [A]
+    SHL D
+    LDA A, e2
+    STORE D, [A]
+
+    ; if e2 >= -dy
+    LDA A, dy
+    LOAD D, [A]
+    NEG D
+    LDA A, negDy
+    STORE D, [A]
+
+    LDA A, e2
+    LOAD D, [A]
+    LDA A, negDy
+    LOAD B, [A]
+    SUB D, B
+    BRN .dl_skip_xstep
+
+    ; err -= dy
+    LDA A, err
+    LOAD D, [A]
+    LDA A, dy
+    LOAD B, [A]
+    SUB D, B
+    LDA A, err
+    STORE D, [A]
+
+    ; x0 += sx
+    LDA A, lineX0
+    LOAD D, [A]
+    LDA A, sx
+    LOAD B, [A]
+    ADD D, B
+    LDA A, lineX0
+    STORE D, [A]
+
+.dl_skip_xstep:
+    ; if e2 <= dx
+    LDA A, dx
+    LOAD D, [A]
+    LDA A, e2
+    LOAD B, [A]
+    SUB D, B
+    BRN .dl_skip_ystep
+
+    ; err += dx
+    LDA A, err
+    LOAD D, [A]
+    LDA A, dx
+    LOAD B, [A]
+    ADD D, B
+    LDA A, err
+    STORE D, [A]
+
+    ; y0 += sy
+    LDA A, lineY0
+    LOAD D, [A]
+    LDA A, sy
+    LOAD B, [A]
+    ADD D, B
+    LDA A, lineY0
+    STORE D, [A]
+
+.dl_skip_ystep:
+    BRA .dl_loop
+
+; ------------------------------------------------------------
+; plotPixel
+; Input : D = x, B = y
+; Color : white (0xF)
+; ------------------------------------------------------------
+
+plotPixel:
+    ; save x, y
+    LDA A, pxX
+    STORE D, [A]
+    LDA A, pxY
+    STORE B, [A]
+
+    ; rowOff = y*40 = y*32 + y*8
+    LDA A, pxY
+    LOAD D, [A]
+    SHL D
+    SHL D
+    SHL D                  ; y*8
+    LDA A, rowTmp
+    STORE D, [A]
+
+    LDA A, pxY
+    LOAD D, [A]
+    SHL D
+    SHL D
+    SHL D
+    SHL D
+    SHL D                  ; y*32
+    LDA A, rowTmp
+    LOAD B, [A]
+    ADD D, B               ; y*40
+    LDA A, rowOff
+    STORE D, [A]
+
+    ; xWord = x >> 2
+    LDA A, pxX
+    LOAD D, [A]
+    ASR D
+    ASR D
+    LDA A, xWord
+    STORE D, [A]
+
+    ; xMod = x & 3
+    LDA A, pxX
+    LOAD D, [A]
+    LDI B, 3
+    AND D, B
+    LDA A, xMod
+    STORE D, [A]
+
+    ; pixAddr = FB_BASE + rowOff + xWord
+    LDA D, FB_BASE
+    LDA A, rowOff
+    LOAD B, [A]
+    ADD D, B
+    LDA A, xWord
+    LOAD B, [A]
+    ADD D, B
+    LDA A, pixAddr
+    STORE D, [A]
+
+    ; D = oldWord
+    LDA A, pixAddr
+    LOAD A, [A]
+    LOAD D, [A]
+
+    ; apply clear mask for selected nibble
+    LDA A, xMod
+    LOAD B, [A]
+    LDA A, maskTable
+    ADD A, B
+    LOAD B, [A]
+    AND D, B
+
+    ; OR in white pixel nibble
+    LDA A, xMod
+    LOAD B, [A]
+    LDA A, colorTable
+    ADD A, B
+    LOAD B, [A]
+    OR D, B
+
+    ; write back
+    LDA A, pixAddr
+    LOAD A, [A]
+    STORE D, [A]
+    RET
+
+; ------------------------------------------------------------
+; Working variables
+; ------------------------------------------------------------
+
+frameIndex:  .WORD 0
+framePtr:    .WORD 0
+edgePtr:     .WORD 0
+edgeCount:   .WORD 0
+
+lineX0:      .WORD 0
+lineY0:      .WORD 0
+lineX1:      .WORD 0
+lineY1:      .WORD 0
+
+dx:          .WORD 0
+dy:          .WORD 0
+sx:          .WORD 0
+sy:          .WORD 0
+err:         .WORD 0
+e2:          .WORD 0
+negDy:       .WORD 0
+
+pxX:         .WORD 0
+pxY:         .WORD 0
+rowTmp:      .WORD 0
+rowOff:      .WORD 0
+xWord:       .WORD 0
+xMod:        .WORD 0
+pixAddr:     .WORD 0
+
+; ------------------------------------------------------------
+; Nibble helpers for pixel plotter
+; ------------------------------------------------------------
+
+maskTable:
+    .WORD 0x0FFF, 0xF0FF, 0xFF0F, 0xFFF0
+
+colorTable:
+    .WORD 0xF000, 0x0F00, 0x00F0, 0x000F
+
+; ------------------------------------------------------------
+; Cube edge list
+; 12 edges, pairs of vertex indices
+; ------------------------------------------------------------
+
+edges:
+    .WORD 0,1
+    .WORD 1,2
+    .WORD 2,3
+    .WORD 3,0
+
+    .WORD 4,5
+    .WORD 5,6
+    .WORD 6,7
+    .WORD 7,4
+
+    .WORD 0,4
+    .WORD 1,5
+    .WORD 2,6
+    .WORD 3,7
+
+; ------------------------------------------------------------
+; 16 projected frames
+; Each frame = 8 vertices * (x,y) = 16 words
+; Vertex order:
+;   0,1,2,3 = front square
+;   4,5,6,7 = back square
+; ------------------------------------------------------------
+
+frames:
+frame0:
+    .WORD 62, 42, 98, 42, 98, 78, 62, 78, 69, 49, 91, 49, 91, 71, 69, 71
+frame1:
+    .WORD 58, 46, 90, 46, 88, 81, 61, 74, 74, 45, 96, 46, 94, 68, 74, 65
+frame2:
+    .WORD 58, 47, 80, 56, 80, 85, 63, 70, 80, 43, 102, 47, 98, 70, 80, 62
+frame3:
+    .WORD 61, 44, 68, 60, 72, 84, 67, 65, 86, 41, 103, 52, 98, 75, 84, 60
+frame4:
+    .WORD 67, 42, 59, 58, 67, 81, 71, 61, 93, 42, 101, 58, 93, 81, 89, 61
+frame5:
+    .WORD 74, 41, 57, 52, 63, 75, 75, 61, 99, 44, 92, 61, 88, 85, 93, 66
+frame6:
+    .WORD 80, 43, 58, 47, 63, 70, 80, 62, 102, 47, 80, 56, 80, 85, 98, 70
+frame7:
+    .WORD 86, 45, 64, 46, 66, 68, 86, 65, 102, 46, 70, 46, 72, 81, 99, 74
+frame8:
+    .WORD 91, 49, 69, 49, 69, 71, 91, 71, 98, 42, 62, 42, 62, 78, 98, 78
+frame9:
+    .WORD 94, 50, 74, 52, 74, 74, 96, 73, 88, 35, 61, 42, 58, 73, 90, 73
+frame10:
+    .WORD 98, 49, 80, 59, 80, 79, 102, 73, 80, 31, 63, 49, 58, 73, 80, 65
+frame11:
+    .WORD 98, 45, 84, 60, 86, 79, 103, 68, 72, 33, 67, 52, 61, 75, 68, 60
+frame12:
+    .WORD 93, 40, 89, 59, 93, 80, 101, 63, 67, 40, 71, 59, 67, 80, 59, 63
+frame13:
+    .WORD 88, 35, 93, 52, 99, 75, 92, 60, 63, 45, 75, 60, 74, 79, 57, 68
+frame14:
+    .WORD 80, 31, 98, 49, 102, 73, 80, 65, 63, 49, 80, 59, 80, 79, 58, 73
+frame15:
+    .WORD 70, 36, 99, 44, 102, 73, 70, 73, 66, 50, 86, 52, 86, 74, 64, 73

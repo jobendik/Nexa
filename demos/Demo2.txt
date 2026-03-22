@@ -1,0 +1,216 @@
+const VRAM_BASE: int = 0xEC00;
+const VRAM_PIXEL_END: int = 0xFE40; // VRAM_BASE + 4800 words (160x120 pixels / 4 pixels per word)
+const DISPLAY_CTRL: int = 0xFF30;
+
+fn main() {
+    scene1_Intro();
+    scene2_Starfield();
+    scene3_Circles();
+    scene4_Geometry();
+    scene5_Interference();
+    scene6_Outro();
+    halt();
+}
+
+// -----------------------------------------------------------------
+// SCENE 1: The Awakening (Text Mode Typing Effect)
+// -----------------------------------------------------------------
+fn scene1_Intro() {
+    poke(DISPLAY_CTRL, 0); // Switch to Text Mode
+    Screen.clearScreen();
+    
+    // Note: String literals allocate heap memory in Nexa
+    var msg: String = "NEXA MEGADEMO";
+    var len: int = msg.length();
+    var offset: int = 1240 - (len / 2); // Center of 80x30 text mode grid
+    var i: int = 0;
+    
+    while (i < len) {
+        var charCode: int = msg.charAt(i);
+        var colorData: int = 0x0A00; // Bit 8-11 is FG (A = Light Green), Bit 12-15 is BG (0 = Black)
+        
+        // Direct VRAM access for fast text rendering
+        poke(VRAM_BASE + offset + i, colorData | charCode);
+        i = i + 1;
+        Time.sleep(80);
+    }
+    Time.sleep(1000);
+    
+    // Explicit manual disposal of the string object
+    msg.dispose();
+}
+
+// -----------------------------------------------------------------
+// SCENE 2: Into the Void (Pixel Mode Starfield)
+// -----------------------------------------------------------------
+fn scene2_Starfield() {
+    poke(DISPLAY_CTRL, 1); // Switch to Pixel Mode
+        FrameClock.init(33);
+    
+    var numStars: int = 50;
+    // Using parallel untyped word arrays since Nexa structs are objects 
+    // and parallel arrays avoid massive object allocation overhead in loops.
+    var starX: Array = Array.new(numStars);
+    var starY: Array = Array.new(numStars);
+    var starZ: Array = Array.new(numStars);
+    
+    var i: int = 0;
+    while (i < numStars) {
+        // Pseudo-random distribution using modulo
+        starX[i] = (i * 23) % 160;
+        starY[i] = (i * 17) % 120;
+        starZ[i] = ((i * 3) % 5) + 1; // Z (depth/speed) is 1-5
+        i = i + 1;
+    }
+    
+    var frame: int = 0;
+    while (frame < 80) {
+        Screen.clearScreen();
+        i = 0;
+        
+        while (i < numStars) {
+            var x: int = starX[i];
+            var y: int = starY[i];
+            var z: int = starZ[i];
+            
+            // Darker colors for objects further away (Z-depth shading)
+            Screen.setColor(15 - (z * 2)); 
+            Screen.drawPixel(x, y);
+            
+            x = x - z; // Move star left based on depth speed
+            if (x < 0) {
+                x = 159;
+                y = (y + 13) % 120;
+            }
+            starX[i] = x;
+            starY[i] = y;
+            
+            i = i + 1;
+        }
+            FrameClock.waitNextFrame();
+        frame = frame + 1;
+    }
+    
+    // Cleanup heap allocations
+    starX.dispose();
+    starY.dispose();
+    starZ.dispose();
+}
+
+// -----------------------------------------------------------------
+// SCENE 3: Hypnotic Rings (Concentric Circles)
+// -----------------------------------------------------------------
+fn scene3_Circles() {
+    poke(DISPLAY_CTRL, 1);
+        FrameClock.init(20);
+    var frame: int = 0;
+    
+    while (frame < 35) {
+        Screen.clearScreen();
+        var r: int = frame % 20;
+        var color: int = 1;
+        
+        while (r < 90) {
+            Screen.setColor(color);
+            Screen.drawCircle(80, 60, r); // Center of 160x120 screen
+            
+            r = r + 12;
+            color = color + 1;
+            if (color > 15) { 
+                color = 1; 
+            }
+        }
+            FrameClock.waitNextFrame();
+        frame = frame + 1;
+    }
+}
+
+// -----------------------------------------------------------------
+// SCENE 4: Wireframe Dream (Line Geometry)
+// -----------------------------------------------------------------
+fn scene4_Geometry() {
+    poke(DISPLAY_CTRL, 1);
+        FrameClock.init(25);
+    var frame: int = 0;
+    var y1: int = 0;
+    var y2: int = 119;
+    
+    while (frame < 50) {
+        Screen.clearScreen();
+        Screen.setColor((frame % 14) + 2); // Cycle colors, skipping black (0) and dark blue (1)
+        
+        var x: int = 0;
+        while (x < 160) {
+            Screen.drawLine(x, y1, 159 - x, y2);
+            x = x + 16;
+        }
+        
+        // Bounce and wrap coordinates
+        y1 = (y1 + 4) % 120;
+        y2 = y2 - 4;
+        if (y2 < 0) { 
+            y2 = 119 + y2; 
+        } 
+        
+            FrameClock.waitNextFrame();
+        frame = frame + 1;
+    }
+}
+
+// -----------------------------------------------------------------
+// SCENE 5: The Glitch (High-Speed Direct VRAM Manipulation)
+// -----------------------------------------------------------------
+fn scene5_Interference() {
+    poke(DISPLAY_CTRL, 1); 
+    var frame: int = 0;
+    
+    while (frame < 60) {
+        var addr: int = VRAM_BASE;
+        var offset: int = 0;
+        
+        // Math.* library calls (like multiplication) are slow. 
+        // We pre-calculate this value outside the massive 4800-iteration loop.
+        var frameShift: int = frame * 64; 
+        
+        while (addr < VRAM_PIXEL_END) {
+            // We use raw bitwise operators (&, |) because they compile to 
+            // single-instruction equivalents and bypass the slower Math.* calls.
+            var val: int = (offset & frameShift) | ((offset + frame) & 0x0F0F);
+            
+            poke(addr, val);
+            addr = addr + 1;
+            offset = offset + 1;
+        }
+        frame = frame + 1;
+    }
+}
+
+// -----------------------------------------------------------------
+// SCENE 6: The End (Text Mode Color Flasher)
+// -----------------------------------------------------------------
+fn scene6_Outro() {
+    poke(DISPLAY_CTRL, 0); // Back to Text Mode
+    Screen.clearScreen();
+    FrameClock.init(10);
+    
+    var msg: String = "SYSTEM HALTED. GREETS!";
+    var len: int = msg.length();
+    var offset: int = 1240 - (len / 2);
+    
+    var blink: int = 0;
+    while (blink < 30) {
+        var color: int = (blink % 14) + 2;
+        var colorData: int = color * 256; // Shift color to bits 8-11 for FG
+        
+        var i: int = 0;
+        while (i < len) {
+            var charCode: int = msg.charAt(i);
+            poke(VRAM_BASE + offset + i, colorData | charCode);
+            i = i + 1;
+        }
+        FrameClock.waitNextFrame();
+        blink = blink + 1;
+    }
+    
+    msg.dispose();
+}

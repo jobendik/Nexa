@@ -1,0 +1,532 @@
+; ==============================================================================
+; INFINITE ROTATING WIREFRAME CUBE - NEXA ASM
+; Fikset minne-korrupsjon (Code Overlap) og lagt til Clear Screen!
+; ==============================================================================
+
+.EQU DISP_CTRL,  0xFF30  
+.EQU KBD_ASCII,  0xFF01  
+.EQU FB_BASE,    0xEC00  
+
+; Flyttet alle variabler opp til 0x0800 (ord 2048) slik at maskinkoden
+; som starter på 0x0000 har masse plass til å vokse uten å bli overskrevet!
+.EQU PX_BASE,    0x0800  
+.EQU PY_BASE,    0x0808  
+.EQU EDGE_BASE,  0x0820  
+.EQU FRAME_CNT,  0x0840  
+.EQU DRAW_COLOR, 0x0841  
+.EQU LOOP_IDX,   0x0844  
+
+; Bresenham variabler
+.EQU LINE_X0,    0x0850
+.EQU LINE_Y0,    0x0851
+.EQU LINE_X1,    0x0852
+.EQU LINE_Y1,    0x0853
+.EQU LINE_DX,    0x0854
+.EQU LINE_DY,    0x0855
+.EQU LINE_SX,    0x0856
+.EQU LINE_SY,    0x0857
+.EQU LINE_ERR,   0x0858
+.EQU LINE_E2,    0x0859
+
+.ORG 0x0000
+
+; --- 1. SYSTEM INITIALIZATION ---
+LDA SP, 0xEBF0           ;
+
+; Bytt til Pixel Mode
+LDA A, DISP_CTRL
+LDI D, 1
+STORE D, [A]             ;
+
+; Nullstill frame counter
+LDA A, FRAME_CNT
+CLR D
+STORE D, [A]             ;
+
+; Initialiser data
+LDA A, INIT_VERTICES
+CALL                     ;
+LDA A, INIT_EDGES
+CALL                     ;
+
+; --- 2. MAIN ANIMATION LOOP ---
+MAIN_LOOP:
+
+    ; A. Slett skjermen fullstendig
+    LDA A, CLEAR_SCREEN
+    CALL
+
+    ; B. Frame counter & Reset logikk
+    LDA A, FRAME_CNT
+    LOAD D, [A]          ;
+    INC D                ;
+    STORE D, [A]         ;
+    
+    LDA B, 40            
+    CMP D, B             
+    BRN SKIP_RESET       ;
+    
+    CLR D
+    STORE D, [A]
+    LDA A, INIT_VERTICES
+    CALL                 ;
+    
+SKIP_RESET:
+
+    ; C. Roter alle hjørner (3D matematikk)
+    LDA A, ROTATE_VERTICES
+    CALL                 ;
+
+    ; D. Tegn ny frame (Light Cyan chunky pixels)
+    LDA A, DRAW_COLOR
+    LDA D, 0xBBBB        
+    STORE D, [A]         ;
+    
+    LDA A, DRAW_EDGES
+    CALL                 ;
+
+    ; E. Delay for å gjøre animasjonen synlig (Sync)
+    LDA A, WAIT_SYNC
+    CALL                 ;
+
+    ; F. Sjekk ESC (27) for å avslutte
+    LDA A, KBD_ASCII
+    LOAD D, [A]          ;
+    LDI B, 27
+    CMP D, B
+    BRZ EXIT_PROGRAM     ;
+
+    LDA A, MAIN_LOOP
+    JMP                  ;
+
+
+; --- 3. EXIT SEQUENCE ---
+EXIT_PROGRAM:
+    LDA A, DISP_CTRL
+    CLR D                ;
+    STORE D, [A]         ;
+    HALT                 ;
+
+
+; ==============================================================================
+; SUBROUTINE: CLEAR_SCREEN
+; Fyller alle 4800 ord i framebufferen med svart (0)
+; ==============================================================================
+CLEAR_SCREEN:
+    LDA A, FB_BASE
+    CLR D                ; Svart farge
+    LDA B, 4800          ; Skjermstørrelse i ord
+.clear_loop:
+    STORE D, [A]         ; Skriv piksler
+    
+    PUSH B               ; Lagre teller trygt
+    LDI B, 1
+    ADD A, B             ; A = A + 1
+    POP B                ; Gjenopprett teller
+    
+    DEC B                ; B = B - 1
+    BRP .clear_loop      ; Fortsett hvis teller > 0
+    RET
+
+
+; ==============================================================================
+; SUBROUTINE: ROTATE_VERTICES (X = X + Y/8, Y = Y - X/8)
+; ==============================================================================
+ROTATE_VERTICES:
+    LDA A, LOOP_IDX
+    CLR D
+    STORE D, [A]
+
+.rot_loop:
+    LDA A, LOOP_IDX
+    LOAD D, [A]
+    LDA A, PY_BASE
+    ADD A, D
+    LOAD D, [A]          ;
+
+    ASR D                ;
+    ASR D                ;
+    ASR D                ; D = Y / 8
+
+    LDA A, LOOP_IDX
+    LOAD B, [A]
+    LDA A, PX_BASE
+    ADD A, B
+    LOAD B, [A]          ;
+    ADD B, D             ; B = X + Y/8
+    STORE B, [A]         ; Lagre ny X
+
+    MOV D, B
+    ASR D                ;
+    ASR D                ;
+    ASR D                ; D = Ny X / 8
+
+    LDA A, LOOP_IDX
+    LOAD B, [A]
+    LDA A, PY_BASE
+    ADD A, B
+    LOAD B, [A]          ;
+    SUB B, D             ; B = Y - Ny_X/8
+    STORE B, [A]         ; Lagre ny Y
+
+    LDA A, LOOP_IDX
+    LOAD D, [A]
+    INC D                ;
+    STORE D, [A]         ;
+    
+    LDI B, 8
+    CMP D, B
+    BRN .rot_loop        ;
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: DRAW_EDGES (Går gjennom de 12 kantene)
+; ==============================================================================
+DRAW_EDGES:
+    LDA A, LOOP_IDX
+    CLR D
+    STORE D, [A]
+
+.edge_loop:
+    ; Last Punkt 1
+    LDA A, LOOP_IDX
+    LOAD D, [A]
+    LDA A, EDGE_BASE
+    ADD A, D
+    LOAD B, [A]          ;
+
+    LDA A, PX_BASE
+    ADD A, B
+    LOAD D, [A]
+    LDA A, LINE_X0
+    STORE D, [A]         ;
+
+    LDA A, PY_BASE
+    ADD A, B
+    LOAD D, [A]
+    LDA A, LINE_Y0
+    STORE D, [A]         ;
+
+    ; Last Punkt 2
+    LDA A, LOOP_IDX
+    LOAD D, [A]
+    INC D
+    LDA A, EDGE_BASE
+    ADD A, D
+    LOAD B, [A]          ;
+
+    LDA A, PX_BASE
+    ADD A, B
+    LOAD D, [A]
+    LDA A, LINE_X1
+    STORE D, [A]         ;
+
+    LDA A, PY_BASE
+    ADD A, B
+    LOAD D, [A]
+    LDA A, LINE_Y1
+    STORE D, [A]         ;
+
+    ; Tegn streken
+    LDA A, DRAW_LINE
+    CALL                 ;
+
+    ; Øk indeks med 2 (siden hver linje har 2 punkter)
+    LDA A, LOOP_IDX
+    LOAD D, [A]
+    INC D
+    INC D
+    STORE D, [A]
+
+    LDI B, 24
+    CMP D, B             
+    BRN .edge_loop       ;
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: DRAW_LINE (Ekte Bresenham Algoritme)
+; ==============================================================================
+DRAW_LINE:
+    ; Beregn DX = abs(X1 - X0), SX = (X0 < X1) ? 1 : -1
+    LDA A, LINE_X1
+    LOAD D, [A]          ;
+    LDA A, LINE_X0
+    LOAD B, [A]          ;
+    SUB D, B             ;
+    BRP .dx_pos          ;
+    BRZ .dx_pos          ;
+    NEG D                ;
+    LDI B, -1
+    BRA .store_dx        ;
+.dx_pos:
+    LDI B, 1
+.store_dx:
+    LDA A, LINE_SX
+    STORE B, [A]         ;
+    LDA A, LINE_DX
+    STORE D, [A]         ;
+
+    ; Beregn DY = -abs(Y1 - Y0), SY = (Y0 < Y1) ? 1 : -1
+    LDA A, LINE_Y1
+    LOAD D, [A]          ;
+    LDA A, LINE_Y0
+    LOAD B, [A]          ;
+    SUB D, B             ;
+    BRP .dy_pos          ;
+    BRZ .dy_pos          ;
+    NEG D                ;
+    LDI B, -1
+    BRA .store_dy        ;
+.dy_pos:
+    LDI B, 1
+.store_dy:
+    LDA A, LINE_SY
+    STORE B, [A]         ;
+    NEG D                ; Bresenham bruker negativ DY
+    LDA A, LINE_DY
+    STORE D, [A]         ;
+
+    ; ERR = DX + DY
+    LDA A, LINE_DX
+    LOAD D, [A]          ;
+    LDA A, LINE_DY
+    LOAD B, [A]          ;
+    ADD D, B             ;
+    LDA A, LINE_ERR
+    STORE D, [A]         ;
+
+.line_loop:
+    LDA A, DRAW_CHUNKY_PIXEL
+    CALL                 ;
+
+    ; Sjekk om vi er fremme: X0 == X1 && Y0 == Y1
+    LDA A, LINE_X0
+    LOAD D, [A]          ;
+    LDA A, LINE_X1
+    LOAD B, [A]          ;
+    CMP D, B
+    BRNP .calc_e2        ;
+    LDA A, LINE_Y0
+    LOAD D, [A]          ;
+    LDA A, LINE_Y1
+    LOAD B, [A]          ;
+    CMP D, B
+    BRZ .line_done       ;
+
+.calc_e2:
+    ; E2 = 2 * ERR
+    LDA A, LINE_ERR
+    LOAD D, [A]          ;
+    SHL D                ;
+    LDA A, LINE_E2
+    STORE D, [A]         ;
+
+    ; if (E2 >= DY) { ERR += DY; X0 += SX; }
+    LDA A, LINE_DY
+    LOAD B, [A]          ;
+    CMP D, B
+    BRN .check_dx        ;
+    LDA A, LINE_ERR
+    LOAD D, [A]          ;
+    ADD D, B             ;
+    STORE D, [A]         ;
+    LDA A, LINE_SX
+    LOAD B, [A]          ;
+    LDA A, LINE_X0
+    LOAD D, [A]          ;
+    ADD D, B             ;
+    STORE D, [A]         ;
+
+.check_dx:
+    ; if (E2 <= DX) { ERR += DX; Y0 += SY; }
+    LDA A, LINE_E2
+    LOAD D, [A]          ;
+    LDA A, LINE_DX
+    LOAD B, [A]          ;
+    CMP D, B
+    BRP .loop_next       ;
+    LDA A, LINE_ERR
+    LOAD D, [A]          ;
+    ADD D, B             ;
+    STORE D, [A]         ;
+    LDA A, LINE_SY
+    LOAD B, [A]          ;
+    LDA A, LINE_Y0
+    LOAD D, [A]          ;
+    ADD D, B             ;
+    STORE D, [A]         ;
+
+.loop_next:
+    LDA A, .line_loop
+    JMP                  ;
+
+.line_done:
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: DRAW_CHUNKY_PIXEL
+; Henter relativ koordinat, gjør den absolutt, sjekker bounds og tegner!
+; ==============================================================================
+DRAW_CHUNKY_PIXEL:
+    ; Y bounds sjekk (0-119)
+    LDA A, LINE_Y0
+    LOAD D, [A]          ;
+    LDA A, 60            ; Sentrer skjerm (Y+60)
+    ADD D, A
+    BRZP .y_pos_ok       ;
+    RET                  ;
+.y_pos_ok:
+    LDA B, 120           
+    CMP D, B             ;
+    BRN .y_bounds_ok     ;
+    RET                  ;
+.y_bounds_ok:
+    ; Beregn Y * 40 for skjermraden
+    MOV B, D
+    SHL B                ;
+    SHL B                ;
+    SHL B                ; B = Y * 8
+    MOV D, B
+    SHL B                ;
+    SHL B                ; B = Y * 32
+    ADD D, B             ; D = Y * 40
+    PUSH D               ; Lagre på stack!
+
+    ; X bounds sjekk (0-159)
+    LDA A, LINE_X0
+    LOAD B, [A]          ;
+    LDA A, 80            ; Sentrer skjerm (X+80)
+    ADD B, A
+    BRZP .x_pos_ok       ;
+    POP D                
+    RET                  ;
+.x_pos_ok:
+    LDA D, 160           
+    CMP B, D             ;
+    BRN .x_bounds_ok     ;
+    POP D
+    RET                  ;
+.x_bounds_ok:
+    ; Beregn X / 4 (siden det er 4 piksler per minneord)
+    ASR B                ;
+    ASR B                ;
+    
+    ; Kombiner til endelig Framebuffer-adresse
+    POP D                ; Hent tilbake Y*40
+    ADD D, B             ;
+    LDA B, FB_BASE
+    ADD D, B             ;
+
+    ; Skriv piksel
+    MOV B, D             ;
+    LDA A, DRAW_COLOR
+    LOAD D, [A]          ;
+    MOV A, B
+    STORE D, [A]         ;
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: WAIT_SYNC
+; ==============================================================================
+WAIT_SYNC:
+    LDA D, 2000          ; Sync delay
+    LDI B, 1
+.delay_loop:
+    SUB D, B             ;
+    BRP .delay_loop      ;
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: INIT_VERTICES
+; Laster basen for de 8 hjørnene. 
+; ==============================================================================
+INIT_VERTICES:
+    LDA A, PX_BASE
+    LDI D, -20
+    STORE D, [A]         ;
+    LDI D, 20
+    STORE D, [A+1]       ;
+    STORE D, [A+2]       ;
+    LDI D, -20
+    STORE D, [A+3]       ;
+    LDI D, -10
+    STORE D, [A+4]       ;
+    LDI D, 30
+    STORE D, [A+5]       ;
+    STORE D, [A+6]       ;
+    LDI D, -10
+    STORE D, [A+7]       ;
+
+    LDA A, PY_BASE
+    LDI D, -20
+    STORE D, [A]         ;
+    STORE D, [A+1]       ;
+    LDI D, 20
+    STORE D, [A+2]       ;
+    STORE D, [A+3]       ;
+    LDI D, -30
+    STORE D, [A+4]       ;
+    STORE D, [A+5]       ;
+    LDI D, 10
+    STORE D, [A+6]       ;
+    STORE D, [A+7]       ;
+    RET                  ;
+
+
+; ==============================================================================
+; SUBROUTINE: INIT_EDGES
+; Laster linje-indeksene mellom de 8 hjørnene.
+; ==============================================================================
+INIT_EDGES:
+    LDA A, EDGE_BASE
+    
+    LDI D, 0
+    STORE D, [A]         ;
+    LDI D, 1
+    STORE D, [A+1]       ;
+    STORE D, [A+2]       ;
+    LDI D, 2
+    STORE D, [A+3]       ;
+    STORE D, [A+4]       ;
+    LDI D, 3
+    STORE D, [A+5]       ;
+    STORE D, [A+6]       ;
+    LDI D, 0
+    STORE D, [A+7]       ;
+
+    LDI D, 4
+    STORE D, [A+8]       ;
+    LDI D, 5
+    STORE D, [A+9]       ;
+    STORE D, [A+10]      ;
+    LDI D, 6
+    STORE D, [A+11]      ;
+    STORE D, [A+12]      ;
+    LDI D, 7
+    STORE D, [A+13]      ;
+    STORE D, [A+14]      ;
+    LDI D, 4
+    STORE D, [A+15]      ;
+
+    LDI D, 0
+    STORE D, [A+16]      ;
+    LDI D, 4
+    STORE D, [A+17]      ;
+    LDI D, 1
+    STORE D, [A+18]      ;
+    LDI D, 5
+    STORE D, [A+19]      ;
+    LDI D, 2
+    STORE D, [A+20]      ;
+    LDI D, 6
+    STORE D, [A+21]      ;
+    LDI D, 3
+    STORE D, [A+22]      ;
+    LDI D, 7
+    STORE D, [A+23]      ;
+    RET                  ;

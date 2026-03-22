@@ -1,0 +1,281 @@
+NEXA GPT REFERENCE (compact, normative)
+
+Target:
+- Nexa is a class-based, statically typed language for Nexa-16.
+- Compiles to stack VM, then Nexa ASM.
+- 16-bit signed machine: all values are 16-bit words.
+- No floats, no 32-bit ints, no real pointers beyond raw 16-bit addresses.
+- bool: true = -1 (0xFFFF), false = 0.
+- The default toolchain boots Main.main. In practice the usual spelling is a top-level fn main() { ... halt(); }, but class Main { fn main() { ... } } also resolves correctly when compiled as module Main.
+
+Top-level declarations:
+- fn
+- class
+- struct
+- enum
+- const
+- static
+- import
+
+Types:
+- int
+- char
+- bool
+- void
+- class/struct names as object pointer types
+- Array, String are object types
+
+Literals:
+- decimal: 42
+- hex: 0xFF30
+- binary: 0b1010
+- char: 'A', '\n', '\x41'
+- string: "Hello"
+- true, false, null
+
+Strings:
+- String literals allocate heap String objects.
+- They are NOT raw char pointers.
+- No GC: dispose allocated strings when needed.
+
+Variables/constants:
+- Declaration syntax: var name: Type = expr;
+- Type annotation is required.
+- Initialization optional.
+- const syntax: const NAME: int = literal;
+- Named const declarations are reliably collected from direct integer literals and unary-negative integer literals (for example `-7`). Separately, pure constant expressions at use sites are folded aggressively (arithmetic, bitwise, comparison, logical), even when they are not collected as named constants.
+- Variable declarations may appear anywhere inside function bodies.
+
+Functions:
+- Syntax:
+  fn add(a: int, b: int) -> int { return a + b; }
+  fn greet() { ... }
+- Missing return type => void.
+- Top-level fn is static (no this).
+- void functions implicitly return 0.
+- import ClassName; exists but is currently a no-op.
+- In the default toolchain, execution starts at Main.main.
+
+Classes:
+- Fields:
+  field x: int;
+  static total: int;
+  pub field x: int;   // parsed, future access control
+- Subroutines:
+  new(...) { ... }         // constructor, allocates enough space for fields (minimum 1 word), returns this automatically
+  method foo(...) { ... }  // instance method, implicit this
+  fn bar(...) { ... }      // static/class function
+- Method call:
+  obj.m(a, b)
+  compiler passes obj as implicit first arg
+- Static call:
+  ClassName.f(a, b)
+- Use this.field for instance fields.
+- Chained field/method access is supported:
+  this.player.ball.x
+  this.player.ball.getX()
+- Compiler must know types at each step.
+
+Structs:
+- Syntax:
+  struct Point { x: int; y: int; }
+- Structs auto-generate:
+  Point.new(...)
+  p.dispose()
+- Structs are lightweight objects with named fields.
+- Empty structs still allocate 1 word so they remain valid heap objects.
+- No user-defined methods on structs beyond auto-generated new/dispose.
+
+Enums:
+- Syntax:
+  enum Color { BLACK, RED, BLUE = 10, YELLOW }
+- Values are compile-time ints.
+- Auto-increment unless explicit assignment.
+
+Arrays:
+- Allocate with Array.new(size)
+- Access with arr[i]
+- Arrays are untyped word arrays.
+- arr[i] and arr[i] = value lower to indexed helpers that do base + index addressing with bounds checks.
+- Out-of-bounds array access traps with Sys.error(206).
+- Array.new(size) requires a positive runtime size; Array.new(0) ultimately traps with Sys.error(202).
+- Manual dispose required: arr.dispose()
+
+Operators (precedence low->high):
+- ||
+- &&
+- |
+- ^
+- &
+- == !=
+- < > <= >=
+- << >>
+- + -
+- * / %
+
+Unary:
+- -   arithmetic negation
+- ~   bitwise NOT
+- !   logical NOT (true iff operand == 0)
+
+Important operator semantics:
+- && and || short-circuit.
+- * / % ^ << >> compile to library calls:
+  Math.multiply
+  Math.divide
+  Math.modulo
+  Math.xor
+  Math.shiftLeft
+  Math.shiftRight
+- Therefore these are slower than + - & |
+
+Control flow:
+- if (cond) { ... } else if (cond) { ... } else { ... }
+- while (cond) { ... }
+- for (init; cond; step) { ... }
+- loop { ... }    // infinite loop until break or halt()
+- break           // exits nearest while/for/loop
+- continue        // next iteration
+- return expr;
+- return;
+- Braces are required.
+- Parentheses are required around if/while conditions.
+- No ++, --, +=, -= operators. Use i = i + 1.
+
+Unsafe:
+- unsafe { ... } is syntactically valid.
+- Currently compiles the same as a normal block.
+
+Built-in compiler-handled functions:
+- peek(addr) -> int
+- poke(addr, value)
+- halt()
+- syscall(n, ...)
+
+Runtime APIs automatically available:
+- Output
+  - printChar(c)
+  - printString(s)
+  - printInt(n)
+  - println()
+  - moveCursor(row, col)
+  - backSpace()
+- Screen
+  - clearScreen()
+  - setColor(color)
+  - drawPixel(x, y)
+  - drawRectangle(x1, y1, x2, y2)
+  - drawLine(x1, y1, x2, y2)
+  - drawCircle(cx, cy, r)
+- Keyboard
+  - keyPressed()
+  - readChar()
+  - Special keys: Left=130, Up=131, Right=132, Down=133, Home=134, End=135, PageUp=136, PageDown=137, Insert=138, Delete=139, F1..F12=141..152
+  - Example: key = Keyboard.keyPressed(); if ((key == 130) | (key == 'a') | (key == 'A')) { ... }
+- Input
+  - Input.readKey()
+  - Input.isKeyDown(code)
+- Time
+  - Time.millis()
+  - Time.ticks()
+  - Time.elapsedSince(start)
+  - Time.sleep(ms)
+- FrameClock
+  - FrameClock.init(targetFps)
+  - FrameClock.waitNextFrame()
+  - FrameClock.deltaMillis()
+- Math
+  - multiply divide modulo xor shiftLeft shiftRight sqrt min max abs
+- Sound
+  - Sound.setVoice(channel, period, volume, waveform)
+  - Sound.playNote(channel, period, volume)
+  - Sound.stopVoice(channel)
+  - Sound.silence()
+- String
+  - new(maxLength)
+  - dispose()
+  - length()
+  - charAt(i)
+  - appendChar(c)   // treat as void in Nexa source; runtime returns receiver for compatibility
+  - setCharAt(i, c)
+  - eraseLastChar()
+- Array
+  - new(size)
+  - dispose()
+- Memory
+  - alloc(size)
+  - deAlloc(addr)
+  - peek(addr)
+  - poke(addr, value)
+- Sys
+  - halt()
+  - wait(ms)
+  - error(code)
+
+Linkage notes:
+- Output, Screen, Keyboard, Math, String, Array, Memory, and Sys are linked VM/runtime APIs.
+- Input and Sound are compiler intrinsics: they are part of the Nexa surface, but lower directly to Keyboard/MMIO operations instead of linked VM helper functions.
+- Time and FrameClock are linked VM/runtime timing APIs built on the system timer.
+- Sound MMIO layout: channels 0..2 are tone voices, channel 3 is a noise voice; the sound window spans 0xFF40..0xFF47.
+- Sound waveform mapping: tone channels use 0=square, 1=triangle, 2=sawtooth, 3=sawtooth; noise channel waveform bits select the noise mode.
+
+Calling convention notes:
+- Instance methods can be written/called in OO style:
+  s.length()
+  s.charAt(i)
+- Compiler passes object as first argument.
+- Field access on other objects requires declared type information.
+- String.appendChar should be treated as void in Nexa source even though the runtime returns the receiver for compatibility.
+
+Memory / hardware essentials:
+- 64K x 16-bit address space
+- General RAM: 0x0100–0xEBFF
+- Active framebuffer: 0xEC00–0xFEBF (4800 words)
+- Display-reserved gap: 0xFEC0–0xFEFF (commonly cleared by runtime helpers)
+- Keyboard: 0xFF00–0xFF01
+- Timer: 0xFF10–0xFF14
+- UART: 0xFF20–0xFF23
+- Display controller: 0xFF30–0xFF31
+- Sound: 0xFF40–0xFF47
+- Disk: 0xFF50–0xFF53
+- System control / interrupt controller: 0xFFF0–0xFFF1
+- Text mode: poke(0xFF30, 0)
+- Pixel mode: poke(0xFF30, 1)
+
+Timing essentials:
+- Timer registers: [0] control, [1] interval, [2] counter, [3] millis low, [4] millis high.
+- Time.millis() returns only the low 16 bits of the monotonic timer, so it is suitable only for short elapsed-time windows.
+- Time.sleep(ms) polls guest time until the requested interval has elapsed. It depends on timer progression, but not on timer interrupts being enabled.
+- FrameClock.waitNextFrame() schedules against the frame clock deadline; if already late, it reschedules from current time instead of trying to catch up multiple missed frames.
+- FrameClock.deltaMillis() returns the configured target frame duration, not measured real frame time.
+- Sys.wait(ms) is a compatibility wrapper over Time.sleep(ms).
+
+Display:
+- Text mode: 80x30 cells, one word per cell
+  bits 12–15 = bg color
+  bits 8–11  = fg color
+  bits 0–7   = ASCII
+- Pixel mode: 160x120, 4 pixels per word, 4-bit color each
+- Screen color range: 0..15
+
+Critical gotchas:
+- All arithmetic wraps at 16 bits.
+- main() should end with halt().
+- No garbage collection.
+- Dispose objects/arrays/strings you allocate when appropriate.
+- Strings are heap objects, not raw arrays.
+- true = -1, false = 0.
+- * / % ^ << >> are slower library calls.
+- Runtime APIs need no import; Input and Sound are compiler intrinsics.
+- Chained access is allowed only when types are known.
+
+When generating Nexa code:
+- Always use explicit types.
+- Always use braces.
+- Never use ++, --, +=, -=.
+- End main() with halt().
+- Prefer + - & | when performance matters.
+- Use Array.new / String.new / ClassName.new for allocations.
+- Dispose heap allocations when appropriate.
+- Use poke/peek for direct hardware access.
+- Assume syntax exactly as specified above; do not fall back to classic Nexa syntax if it differs.

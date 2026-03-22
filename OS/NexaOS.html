@@ -1,0 +1,5597 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaOS Boot — Nexa-16 OS Runner</title>
+  <style>
+/* NexaOS Boot — retro terminal styling */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#111;--panel:#1a1a2e;--border:#333;--fg:#c8c8c8;
+  --accent:#0f0;--accent-dim:#0a0;--warn:#fa0;--err:#f44;
+  --mono:'Consolas','Courier New',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:14px;overflow:hidden}
+
+/* Layout */
+.os-shell{display:flex;flex-direction:column;height:100vh}
+.os-topbar{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+.os-topbar h1{font-size:16px;color:var(--accent);letter-spacing:1px}
+.os-topbar .sub{font-size:11px;color:#666;margin-left:12px}
+
+/* Main area */
+.os-main{flex:1;display:flex;overflow:hidden}
+
+/* Setup panel (left) */
+.setup-panel{width:520px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel);overflow-y:auto;flex-shrink:0;transition:width .3s}
+.setup-panel.collapsed{width:0;overflow:hidden;border-right:none}
+.setup-section{display:flex;flex-direction:column;flex:1;min-height:0}
+.setup-section h3{padding:6px 12px;font-size:12px;color:var(--accent-dim);background:#151528;border-bottom:1px solid var(--border);cursor:default;display:flex;justify-content:space-between;align-items:center}
+.setup-section h3 span.tag{font-size:10px;background:var(--accent-dim);color:#000;padding:1px 6px;border-radius:3px}
+.setup-section textarea{flex:1;resize:none;background:#0d0d1a;color:var(--fg);border:none;padding:8px 12px;font-family:var(--mono);font-size:13px;line-height:1.5;outline:none;tab-size:4;min-height:120px}
+.setup-section textarea:focus{background:#0f0f22}
+
+/* Screen area (right) */
+.screen-area{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;position:relative;overflow:hidden}
+.monitor-frame{border:3px solid #333;border-radius:8px;background:#000;padding:0;box-shadow:0 0 40px rgba(0,255,0,.05);display:flex;align-items:center;justify-content:center;width:calc(100% - 24px);height:calc(100% - 40px);overflow:hidden}
+.monitor-frame canvas{display:block;image-rendering:pixelated;cursor:crosshair;width:100%;height:100%;object-fit:contain}
+/* CRT scanline effect */
+.monitor-frame canvas{
+  background:#000;
+}
+
+/* Bottom bar */
+.os-bottom{display:flex;align-items:center;gap:12px;padding:6px 16px;background:var(--panel);border-top:1px solid var(--border);font-size:12px}
+.os-bottom .status{flex:1;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.os-bottom .status.error{color:var(--err)}
+
+/* Buttons */
+button{font-family:var(--mono);font-size:12px;padding:4px 14px;border:1px solid var(--border);background:#222;color:var(--fg);cursor:pointer;border-radius:3px;transition:background .15s}
+button:hover{background:#333}
+button.primary{background:var(--accent-dim);color:#000;border-color:var(--accent-dim);font-weight:bold}
+button.primary:hover{background:var(--accent)}
+button.danger{border-color:#a33;color:#f88}
+button.danger:hover{background:#411}
+
+/* Toolbar */
+.toolbar{display:flex;gap:6px;align-items:center}
+.toolbar label{color:#888;font-size:11px}
+
+/* Error panel */
+.error-panel{display:none;max-height:120px;overflow-y:auto;background:#1a0000;border-top:1px solid #600;padding:8px 12px;font-size:12px;color:var(--err);white-space:pre-wrap}
+.error-panel.visible{display:block}
+
+/* Toggle button for sidebar */
+.toggle-setup{position:absolute;left:4px;top:50%;transform:translateY(-50%);z-index:10;background:var(--panel);border:1px solid var(--border);color:var(--fg);padding:8px 4px;cursor:pointer;border-radius:0 4px 4px 0;font-size:16px;line-height:1}
+
+/* Keyboard hint */
+.kb-hint{position:absolute;bottom:8px;right:12px;font-size:10px;color:#444}
+
+/* Responsive */
+@media(max-width:900px){
+  .setup-panel{width:100%;max-height:40vh;border-right:none;border-bottom:1px solid var(--border)}
+  .os-main{flex-direction:column}
+}
+
+  </style>
+</head>
+<body>
+
+  <div class="os-shell">
+    <!-- Top bar -->
+    <header class="os-topbar">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <h1>NexaOS Boot</h1>
+        <span class="sub">Bootloader (ASM) + OS (Nexa) → Nexa-16 Emulator</span>
+      </div>
+      <div class="toolbar">
+        <button id="bootBtn" class="primary" type="button">&#9654; Boot</button>
+        <button id="resetBtn" class="danger" type="button">Reset</button>
+        <button id="pauseBtn" type="button">Pause</button>
+        <button id="resumeBtn" type="button">Resume</button>
+        <button id="importBootBtn" type="button">Import boot.asm</button>
+        <button id="importOsBtn" type="button">Import nexaos.nx</button>
+        <label>Hastighet <input id="speed" type="range" min="1000" max="5000000" value="2000000" step="10000"></label>
+      </div>
+    </header>
+
+    <!-- Main area -->
+    <div class="os-main">
+      <!-- Setup panel (code editors) -->
+      <div class="setup-panel collapsed" id="setupPanel">
+        <div class="setup-section" style="flex:0.4">
+          <h3>Bootloader <span class="tag">ASM</span></h3>
+          <textarea id="bootloaderEditor" spellcheck="false">; ============================================================
+; NexaOS v2.1 Boot Loader - boot.asm
+; Nexa ASM
+;
+; First-stage boot loader for NexaOS.
+; Initializes hardware, clears the screen, shows boot splash
+; with hardware detection messages, then jumps to the VM
+; bootstrap which starts the Nexa OS kernel.
+;
+; Memory layout:
+;   RAM[0x0002] = cursor variable (framebuffer address)
+;   Stack: 0xEBF0 (grows downward)
+;
+; Framebuffer: 0xEC00 (80x30 text cells)
+; Cell format: (bg<<12) | (fg<<8) | ascii
+;   Example: 0x0F48 = black bg, white fg, 'H'
+;            0x1F48 = blue bg,  white fg, 'H'
+; ============================================================
+
+.EQU DISP_CTRL,    0xFF30    ; Display mode register (0=text, 1=pixel)
+.EQU FRAMEBUF,     0xEC00    ; Start of framebuffer
+.EQU FRAMEBUF_END, 0xF560    ; End of framebuffer (0xEC00 + 2400)
+.EQU STACK_TOP,    0xEBF0    ; Stack grows down from here
+.EQU CURSOR_VAR,   0x0002    ; RAM address holding current cursor
+
+; ============================================================
+; RESET VECTOR / ENTRY POINT (address 0x0000)
+; ============================================================
+
+reset:
+    ; --- Initialize stack pointer ---
+    LDA SP, STACK_TOP
+
+    ; --- Switch to text mode ---
+    LDA A, DISP_CTRL
+    CLR D
+    STORE D, [A]
+
+    ; --- Initialize cursor to framebuffer start ---
+    LDA A, CURSOR_VAR
+    LDA D, FRAMEBUF
+    STORE D, [A]
+
+    ; --------------------------------------------------------
+    ; CLEAR SCREEN
+    ; Fill 0xEC00..0xF55F with 0x0720 (black bg, gray fg, space)
+    ; Classic dark DOS look.
+    ; --------------------------------------------------------
+    LDA A, FRAMEBUF
+    LDA D, 0x0720
+cls_loop:
+    STORE D, [A]
+    INC A
+    PUSH D
+    LDA D, FRAMEBUF_END
+    CMP A, D
+    POP D
+    BRN cls_loop
+
+    ; --------------------------------------------------------
+    ; HEADER ROW (row 0)
+    ; Fill row 0 (80 cells) with 0x1F20 (blue bg, white fg, space)
+    ; --------------------------------------------------------
+    LDA A, FRAMEBUF
+    LDA D, 0x1F20
+hdr_fill:
+    STORE D, [A]
+    INC A
+    PUSH D
+    LDA D, 0xEC50
+    CMP A, D
+    POP D
+    BRN hdr_fill
+
+    ; Write "  NexaOS v2.1  " at col 32 (white on blue)
+    ; 0xEC00 + 32 = 0xEC20
+    LDA A, 0xEC20
+    LDA D, 0x1F20 ; ' '
+    STORE D, [A+0]
+    STORE D, [A+1]
+    LDA D, 0x1F4E ; 'N'
+    STORE D, [A+2]
+    LDA D, 0x1F65 ; 'e'
+    STORE D, [A+3]
+    LDA D, 0x1F78 ; 'x'
+    STORE D, [A+4]
+    LDA D, 0x1F61 ; 'a'
+    STORE D, [A+5]
+    LDA D, 0x1F4F ; 'O'
+    STORE D, [A+6]
+    LDA D, 0x1F53 ; 'S'
+    STORE D, [A+7]
+    LDA D, 0x1F20 ; ' '
+    STORE D, [A+8]
+    LDA D, 0x1F20 ; ' '
+    STORE D, [A+9]
+    LDA D, 0x1F76 ; 'v'
+    STORE D, [A+10]
+    LDA D, 0x1F32 ; '2'
+    STORE D, [A+11]
+    LDA D, 0x1F2E ; '.'
+    STORE D, [A+12]
+    LDA D, 0x1F31 ; '1'
+    STORE D, [A+13]
+    LDA D, 0x1F20 ; ' '
+    STORE D, [A+14]
+    STORE D, [A+15]
+
+    ; Write "[?=Help]" at right side of header (col 70)
+    ; 0xEC00 + 70 = 0xEC46
+    LDA A, 0xEC46
+    LDA D, 0x1F5B ; '['
+    STORE D, [A+0]
+    LDA D, 0x1F3F ; '?'
+    STORE D, [A+1]
+    LDA D, 0x1F3D ; '='
+    STORE D, [A+2]
+    LDA D, 0x1F48 ; 'H'
+    STORE D, [A+3]
+    LDA D, 0x1F65 ; 'e'
+    STORE D, [A+4]
+    LDA D, 0x1F6C ; 'l'
+    STORE D, [A+5]
+    LDA D, 0x1F70 ; 'p'
+    STORE D, [A+6]
+    LDA D, 0x1F5D ; ']'
+    STORE D, [A+7]
+
+    ; --------------------------------------------------------
+    ; BOOT MESSAGES
+    ; Set cursor to each row and call print_str (B = string ptr)
+    ; --------------------------------------------------------
+
+    ; Row 2 = 0xEC00 + 160 = 0xECA0
+    LDA A, CURSOR_VAR
+    LDA D, 0xECA0
+    STORE D, [A]
+    LDA A, STR_INIT
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 3 = 0xEC00 + 240 = 0xECF0
+    LDA A, CURSOR_VAR
+    LDA D, 0xECF0
+    STORE D, [A]
+    LDA A, STR_COPY
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 5 = 0xEC00 + 400 = 0xED90
+    LDA A, CURSOR_VAR
+    LDA D, 0xED90
+    STORE D, [A]
+    LDA A, STR_MEM
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 6 = 0xEC00 + 480 = 0xEDE0
+    LDA A, CURSOR_VAR
+    LDA D, 0xEDE0
+    STORE D, [A]
+    LDA A, STR_VID
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 7 = 0xEC00 + 560 = 0xEE30
+    LDA A, CURSOR_VAR
+    LDA D, 0xEE30
+    STORE D, [A]
+    LDA A, STR_KB
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 8 = 0xEC00 + 640 = 0xEE80
+    LDA A, CURSOR_VAR
+    LDA D, 0xEE80
+    STORE D, [A]
+    LDA A, STR_DISK
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Row 9 = 0xEC00 + 720 = 0xEED0
+    LDA A, CURSOR_VAR
+    LDA D, 0xEED0
+    STORE D, [A]
+    LDA A, STR_SND
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Short delay
+    LDA A, delay
+    CALL
+
+    ; Row 11 = 0xEC00 + 880 = 0xEF70
+    LDA A, CURSOR_VAR
+    LDA D, 0xEF70
+    STORE D, [A]
+    LDA A, STR_FS
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Short delay
+    LDA A, delay
+    CALL
+
+    ; Row 12 = 0xEC00 + 960 = 0xEFC0
+    LDA A, CURSOR_VAR
+    LDA D, 0xEFC0
+    STORE D, [A]
+    LDA A, STR_LOAD
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; Delay before showing ready message
+    LDA A, long_delay
+    CALL
+
+    ; Row 14 = 0xEC00 + 1120 = 0xF060
+    LDA A, CURSOR_VAR
+    LDA D, 0xF060
+    STORE D, [A]
+    LDA A, STR_READY
+    MOV B, A
+    LDA A, print_str
+    CALL
+
+    ; --------------------------------------------------------
+    ; Wait for keypress then jump to VM bootstrap
+    ; --------------------------------------------------------
+wait_key:
+    LDA A, 0xFF00         ; keyboard status register
+    LOAD D, [A]
+    LDI A, 1
+    AND D, A              ; bit 0 = key available?
+    BRZ wait_key          ; loop until key pressed
+    LDA A, 0xFF01         ; read (and consume) the key
+    LOAD D, [A]
+
+    LDA A, __vm_boot
+    JMP
+
+
+; ============================================================
+; SUBROUTINE: print_str
+;
+; Prints a null-terminated string to the framebuffer.
+; Uses white-on-black (0x0F) color attribute.
+;
+; Input:  B = address of null-terminated string
+;         RAM[CURSOR_VAR] (0x0002) = current cursor position
+; Output: RAM[CURSOR_VAR] updated to next write position
+; Clobbers: A, D (but saves/restores via stack), B (advances)
+; ============================================================
+print_str:
+    PUSH A
+    PUSH D
+pstr_loop:
+    MOV A, B              ; A = current string pointer
+    LOAD D, [A]           ; D = character at that address
+    TST D                 ; test D (sets Z if D == 0)
+    BRZ pstr_done         ; null terminator -> done
+    ; Build colored cell: 0x0F00 | character
+    PUSH D                ; save raw character
+    LDA D, 0x0F00         ; D = white-on-black attribute
+    POP A                 ; A = raw character
+    OR D, A               ; D = 0x0F00 | char (colored cell)
+    ; Write colored cell to framebuffer at cursor position
+    PUSH D                ; save colored cell
+    LDA A, CURSOR_VAR     ; A = address of cursor variable
+    LOAD A, [A]           ; A = cursor (framebuffer address)
+    POP D                 ; D = colored cell
+    STORE D, [A]          ; framebuffer[cursor] = colored cell
+    INC A                 ; advance cursor (A = cursor + 1)
+    ; Save updated cursor back to RAM
+    PUSH D                ; save D
+    MOV D, A              ; D = new cursor value
+    LDA A, CURSOR_VAR     ; A = &cursor
+    STORE D, [A]          ; RAM[CURSOR_VAR] = new cursor
+    POP D                 ; restore D
+    ; Advance string pointer: B = B + 1
+    PUSH A                ; save A
+    LDI A, 1
+    ADD B, A              ; B++ (string pointer advances)
+    POP A                 ; restore A
+    BRA pstr_loop
+pstr_done:
+    POP D
+    POP A
+    RET
+
+
+; ============================================================
+; SUBROUTINE: delay
+;
+; Busy-wait delay loop (~5000 iterations).
+; ============================================================
+delay:
+    PUSH A
+    PUSH D
+    LDA D, 5000
+dly_loop:
+    DEC D
+    TST D
+    BRP dly_loop
+    POP D
+    POP A
+    RET
+
+
+; ============================================================
+; SUBROUTINE: long_delay
+;
+; Nested busy-wait (~2 seconds at emulator speed).
+; Uses RAM[0x0003] as outer counter to avoid register conflicts
+; (DEC pseudo-instruction uses B as scratch).
+; ============================================================
+.EQU LD_OUTER_VAR, 0x0003
+long_delay:
+    PUSH A
+    PUSH D
+    LDA D, 200
+    LDA A, LD_OUTER_VAR
+    STORE D, [A]
+ld_outer:
+    LDA D, 30000
+ld_inner:
+    DEC D
+    TST D
+    BRP ld_inner
+    LDA A, LD_OUTER_VAR
+    LOAD D, [A]
+    DEC D
+    STORE D, [A]
+    TST D
+    BRP ld_outer
+    POP D
+    POP A
+    RET
+
+
+; ============================================================
+; STRING DATA
+; ============================================================
+
+STR_INIT:
+    .string "Initializing NexaOS v2.1 ..."
+
+STR_COPY:
+  .string "Copyright (c) 2025 Nexa Labs. All rights reserved."
+
+STR_MEM:
+    .string "Memory test ..............  64K words       [ OK ]"
+
+STR_VID:
+    .string "Video adapter .............  Text 80x30     [ OK ]"
+
+STR_KB:
+    .string "Keyboard ......................  PS/2 std   [ OK ]"
+
+STR_DISK:
+    .string "Disk controller ...  256 sec x 128 words   [ OK ]"
+
+STR_SND:
+    .string "Sound ...................  2ch square wave   [ OK ]"
+
+STR_FS:
+  .string "Checking for NexaFS on disk ..."
+
+STR_LOAD:
+    .string "Starting kernel ..."
+
+STR_READY:
+    .string "Press any key to start NexaOS ..."
+</textarea>
+        </div>
+        <div class="setup-section" style="flex:0.6">
+          <h3>Operativsystem <span class="tag">Nexa</span></h3>
+          <textarea id="osEditor" spellcheck="false">// NexaOS — Minimal DOS for Nexa-16 CPU
+
+fn main() {
+    poke(0xFF30, 0);
+    Disk.init();
+    Fs.init();
+    var sh: Shell = Shell.new();
+    sh.run();
+    halt();
+}
+
+class Disk {
+    static buf: int;
+
+    fn init() {
+        buf = Memory.alloc(128);
+    }
+
+    fn read(sector: int, dest: int) -> int {
+        poke(0xFF52, dest);
+        poke(0xFF51, sector);
+        poke(0xFF50, 1);
+        var timeout: int = 1000;
+        while ((peek(0xFF53) & 1) != 0) {
+            timeout = timeout - 1;
+            if (timeout == 0) { return -1; }
+        }
+        if ((peek(0xFF53) & 4) != 0) { return -1; }
+        return 0;
+    }
+
+    fn write(sector: int, src: int) -> int {
+        poke(0xFF52, src);
+        poke(0xFF51, sector);
+        poke(0xFF50, 2);
+        var timeout: int = 1000;
+        while ((peek(0xFF53) & 1) != 0) {
+            timeout = timeout - 1;
+            if (timeout == 0) { return -1; }
+        }
+        if ((peek(0xFF53) & 4) != 0) { return -1; }
+        return 0;
+    }
+
+    fn getBuf() -> int { return buf; }
+
+    fn readBuf(sector: int) -> int {
+        Disk.read(sector, buf);
+        return buf;
+    }
+
+    fn writeBuf(sector: int) { Disk.write(sector, buf); }
+
+    fn clearBuf() {
+        var i: int = 0;
+        while (i < 128) { poke(buf + i, 0); i = i + 1; }
+    }
+}
+
+class Fs {
+    static fat: int;
+    static dir: int;
+    static sec: int;
+    static mounted: bool;
+    static freeCount: int;
+
+    fn init() {
+        fat = Memory.alloc(256);
+        dir = Memory.alloc(256);
+        sec = Memory.alloc(128);
+        mounted = false;
+        freeCount = 0;
+        Fs.tryMount();
+    }
+
+    fn isMounted() -> bool { return mounted; }
+    fn fatGet(i: int) -> int { return peek(fat + i); }
+    fn fatSet(i: int, v: int) { poke(fat + i, v); }
+
+    fn dirOff(e: int, f: int) -> int {
+        var o: int = e + e; o = o + o; o = o + o; o = o + o;
+        return o + f;
+    }
+    fn dirGet(e: int, f: int) -> int { return peek(dir + Fs.dirOff(e, f)); }
+    fn dirSet(e: int, f: int, v: int) { poke(dir + Fs.dirOff(e, f), v); }
+
+    fn loadFat() { Disk.read(1, fat); Disk.read(2, fat + 128); }
+    fn saveFat() { Disk.write(1, fat); Disk.write(2, fat + 128); }
+    fn loadDir() { Disk.read(3, dir); Disk.read(4, dir + 128); }
+    fn saveDir() { Disk.write(3, dir); Disk.write(4, dir + 128); }
+
+    fn tryMount() {
+        Disk.read(0, sec);
+        if (peek(sec) != 0x4844) { mounted = false; return; }
+        if (peek(sec + 1) != 2) { mounted = false; return; }
+        if ((peek(sec + 3) != 1) | (peek(sec + 5) != 3) | (peek(sec + 7) != 5)) {
+            mounted = false; return;
+        }
+        Fs.loadFat();
+        Fs.loadDir();
+        mounted = true;
+        Fs.countFree();
+    }
+
+    fn countFree() {
+        freeCount = 0;
+        var i: int = 5;
+        while (i < 256) {
+            if (Fs.fatGet(i) == 0) { freeCount = freeCount + 1; }
+            i = i + 1;
+        }
+    }
+
+    fn getFreeCount() -> int { return freeCount; }
+    fn getSec() -> int { return sec; }
+    fn fileSize(idx: int) -> int { return Fs.dirGet(idx, 13); }
+
+    fn format() {
+        var i: int = 0;
+        while (i < 128) { poke(sec + i, 0); i = i + 1; }
+        poke(sec, 0x4844);
+        poke(sec + 1, 2);
+        poke(sec + 2, 256);
+        poke(sec + 3, 1);
+        poke(sec + 4, 2);
+        poke(sec + 5, 3);
+        poke(sec + 6, 2);
+        poke(sec + 7, 5);
+        poke(sec + 8, 251);
+        poke(sec + 9, 72);
+        poke(sec + 10, 65);
+        poke(sec + 11, 67);
+        poke(sec + 12, 75);
+        poke(sec + 13, 68);
+        poke(sec + 14, 79);
+        poke(sec + 15, 83);
+        Disk.write(0, sec);
+
+        i = 0;
+        while (i < 256) { Fs.fatSet(i, 0); i = i + 1; }
+        Fs.fatSet(0, 0xFFFE);
+        Fs.fatSet(1, 0xFFFE);
+        Fs.fatSet(2, 0xFFFE);
+        Fs.fatSet(3, 0xFFFE);
+        Fs.fatSet(4, 0xFFFE);
+        Fs.saveFat();
+
+        i = 0;
+        while (i < 256) { poke(dir + i, 0); i = i + 1; }
+        Fs.saveDir();
+
+        Disk.clearBuf();
+        i = 5;
+        while (i < 256) { Disk.writeBuf(i); i = i + 1; }
+
+        mounted = true;
+        freeCount = 251;
+    }
+
+    fn findFile(n0: int, n1: int, n2: int, n3: int, n4: int, n5: int, n6: int, n7: int, e0: int, e1: int, e2: int) -> int {
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) != 0) {
+                if ((Fs.dirGet(i, 0) == n0) & (Fs.dirGet(i, 1) == n1) &
+                    (Fs.dirGet(i, 2) == n2) & (Fs.dirGet(i, 3) == n3) &
+                    (Fs.dirGet(i, 4) == n4) & (Fs.dirGet(i, 5) == n5) &
+                    (Fs.dirGet(i, 6) == n6) & (Fs.dirGet(i, 7) == n7) &
+                    (Fs.dirGet(i, 8) == e0) & (Fs.dirGet(i, 9) == e1) &
+                    (Fs.dirGet(i, 10) == e2)) {
+                    return i;
+                }
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn createFile(n0: int, n1: int, n2: int, n3: int, n4: int, n5: int, n6: int, n7: int, e0: int, e1: int, e2: int) -> int {
+        var existing: int = Fs.findFile(n0, n1, n2, n3, n4, n5, n6, n7, e0, e1, e2);
+        if (existing >= 0) { return -2; }
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) == 0) {
+                Fs.dirSet(i, 0, n0); Fs.dirSet(i, 1, n1);
+                Fs.dirSet(i, 2, n2); Fs.dirSet(i, 3, n3);
+                Fs.dirSet(i, 4, n4); Fs.dirSet(i, 5, n5);
+                Fs.dirSet(i, 6, n6); Fs.dirSet(i, 7, n7);
+                Fs.dirSet(i, 8, e0); Fs.dirSet(i, 9, e1);
+                Fs.dirSet(i, 10, e2); Fs.dirSet(i, 11, 1);
+                Fs.dirSet(i, 12, 0); Fs.dirSet(i, 13, 0);
+                Fs.dirSet(i, 14, 0); Fs.dirSet(i, 15, 0);
+                Fs.saveDir();
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn allocSector() -> int {
+        var i: int = 5;
+        while (i < 256) {
+            if (Fs.fatGet(i) == 0) {
+                Fs.fatSet(i, 0xFFFF);
+                freeCount = freeCount - 1;
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn freeChain(s: int) {
+        while ((s > 0) & (s < 256)) {
+            var nxt: int = Fs.fatGet(s);
+            Fs.fatSet(s, 0);
+            freeCount = freeCount + 1;
+            if ((nxt == 0) | (nxt == 0xFFFF) | (nxt == 0xFFFE)) { return; }
+            s = nxt;
+        }
+    }
+
+    fn deleteFile(idx: int) {
+        var startSec: int = Fs.dirGet(idx, 12);
+        if (startSec > 0) { Fs.freeChain(startSec); Fs.saveFat(); }
+        Fs.dirSet(idx, 11, 0);
+        Fs.saveDir();
+    }
+
+    fn writeFileData(idx: int, buf: int, len: int) -> int {
+        var oldStart: int = Fs.dirGet(idx, 12);
+
+        if (len == 0) {
+            Fs.dirSet(idx, 12, 0);
+            Fs.dirSet(idx, 13, 0);
+            if (oldStart > 0) { Fs.freeChain(oldStart); }
+            Fs.saveFat(); Fs.saveDir();
+            return 0;
+        }
+
+        var firstSec: int = Fs.allocSector();
+        if (firstSec < 0) { return -1; }
+
+        var curSec: int = firstSec;
+        var pos: int = 0;
+        var secPos: int = 0;
+
+        while (pos < len) {
+            poke(sec + secPos, peek(buf + pos));
+            secPos = secPos + 1;
+            pos = pos + 1;
+
+            if ((secPos >= 128) | (pos >= len)) {
+                while (secPos < 128) { poke(sec + secPos, 0); secPos = secPos + 1; }
+                Disk.write(curSec, sec);
+                secPos = 0;
+                if (pos < len) {
+                    var newSec: int = Fs.allocSector();
+                    if (newSec < 0) {
+                        Fs.freeChain(firstSec);
+                        Fs.saveFat();
+                        return -1;
+                    }
+                    Fs.fatSet(curSec, newSec);
+                    curSec = newSec;
+                }
+            }
+        }
+
+        Fs.dirSet(idx, 12, firstSec);
+        Fs.dirSet(idx, 13, len);
+        if (oldStart > 0) { Fs.freeChain(oldStart); }
+        Fs.saveFat(); Fs.saveDir();
+        return 0;
+    }
+
+    fn readFileData(idx: int, buf: int, maxLen: int) -> int {
+        var size: int = Fs.dirGet(idx, 13);
+        var startSec: int = Fs.dirGet(idx, 12);
+        if ((size == 0) | (startSec == 0)) { return 0; }
+        var curSec: int = startSec;
+        var pos: int = 0;
+        var limit: int = size;
+        if (limit > maxLen) { limit = maxLen; }
+        while ((pos < limit) & (curSec > 0) & (curSec < 256)) {
+            Disk.read(curSec, sec);
+            var i: int = 0;
+            while ((i < 128) & (pos < limit)) {
+                poke(buf + pos, peek(sec + i));
+                pos = pos + 1; i = i + 1;
+            }
+            var nxt: int = Fs.fatGet(curSec);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { curSec = 0; }
+            else { curSec = nxt; }
+        }
+        return pos;
+    }
+}
+
+class Shell {
+    field buf: Array;
+    field len: int;
+    field pname: Array;
+    field pext: Array;
+    field fbuf: int;
+
+    new() {
+        this.buf = Array.new(82);
+        this.len = 0;
+        this.pname = Array.new(8);
+        this.pext = Array.new(3);
+        this.fbuf = Memory.alloc(512);
+        Shell.drawHeader();
+        this.printBanner();
+    }
+
+    fn drawHeader() {
+        var i: int = 0;
+        while (i < 2400) { poke(0xEC00 + i, 0x0720); i = i + 1; }
+        i = 0;
+        while (i < 80) { poke(0xEC00 + i, 0x1F20); i = i + 1; }
+        // "NexaOS" at center
+        poke(0xEC00 + 36, 0x1F48);
+        poke(0xEC00 + 37, 0x1F61);
+        poke(0xEC00 + 38, 0x1F63);
+        poke(0xEC00 + 39, 0x1F6B);
+        poke(0xEC00 + 40, 0x1F44);
+        poke(0xEC00 + 41, 0x1F4F);
+        poke(0xEC00 + 42, 0x1F53);
+        Output.moveCursor(1, 0);
+    }
+
+    method printBanner() {
+        Output.println();
+        Output.printString("NexaOS v2.1 [Nexa-16]");
+        Output.println();
+        if (Fs.isMounted()) {
+            Output.printInt(Fs.getFreeCount());
+            Output.printString(" sectors free");
+        } else {
+            Output.printString("No FS. Type FORMAT");
+        }
+        Output.println();
+        Output.printString("Type ? for help");
+        Output.println();
+        Output.println();
+    }
+
+    method run() {
+        loop {
+            this.printPrompt();
+            this.readLine();
+            if (this.len > 0) { this.execCommand(); }
+        }
+    }
+
+    method printPrompt() {
+        Output.printChar(0x0A00 | 67); Output.printChar(0x0A00 | 58);
+        Output.printChar(0x0A00 | 92); Output.printChar(0x0A00 | 62);
+        Output.printChar(32);
+    }
+
+    method readLine() {
+        this.len = 0;
+        loop {
+            var c: int = Keyboard.readChar();
+            if (c == 10) { Output.println(); break; }
+            else {
+                if (c == 8) { if (this.len > 0) { this.len = this.len - 1; Output.backSpace(); } }
+                else {
+                    if ((c > 31) & (c < 127) & (this.len < 80)) {
+                        this.buf[this.len] = c; this.len = this.len + 1; Output.printChar(c);
+                    }
+                }
+            }
+        }
+        this.buf[this.len] = 0;
+    }
+
+    method upcase(c: int) -> int {
+        if ((c > 96) & (c < 123)) { return c - 32; }
+        return c;
+    }
+
+    method argStart() -> int {
+        var i: int = 0;
+        while ((i < this.len) & (this.buf[i] != 32)) { i = i + 1; }
+        while ((i < this.len) & (this.buf[i] == 32)) { i = i + 1; }
+        return i;
+    }
+
+    method parseFilename(start: int) -> bool {
+        var i: int = 0;
+        while (i < 8) { this.pname[i] = 32; i = i + 1; }
+        i = 0;
+        while (i < 3) { this.pext[i] = 32; i = i + 1; }
+        var pos: int = start;
+        var ni: int = 0;
+        while ((pos < this.len) & (this.buf[pos] == 32)) { pos = pos + 1; }
+        if (pos >= this.len) { return false; }
+        while ((pos < this.len) & (this.buf[pos] != 46) & (this.buf[pos] != 32)) {
+            var uc: int = this.upcase(this.buf[pos]);
+            if (ni < 8) { this.pname[ni] = uc; ni = ni + 1; }
+            pos = pos + 1;
+        }
+        if (ni == 0) { return false; }
+        if ((pos < this.len) & (this.buf[pos] == 46)) {
+            pos = pos + 1;
+            var ei: int = 0;
+            while ((pos < this.len) & (this.buf[pos] != 32)) {
+                var ec: int = this.upcase(this.buf[pos]);
+                if (ei < 3) { this.pext[ei] = ec; ei = ei + 1; }
+                pos = pos + 1;
+            }
+        }
+        return true;
+    }
+
+    method findParsedFile() -> int {
+        return Fs.findFile(this.pname[0], this.pname[1], this.pname[2], this.pname[3],
+            this.pname[4], this.pname[5], this.pname[6], this.pname[7],
+            this.pext[0], this.pext[1], this.pext[2]);
+    }
+
+    method createParsedFile() -> int {
+        return Fs.createFile(this.pname[0], this.pname[1], this.pname[2], this.pname[3],
+            this.pname[4], this.pname[5], this.pname[6], this.pname[7],
+            this.pext[0], this.pext[1], this.pext[2]);
+    }
+
+    method printDirName(idx: int) {
+        var i: int = 0;
+        while (i < 8) { var c: int = Fs.dirGet(idx, i); if (c != 32) { Output.printChar(c); } i = i + 1; }
+        Output.printChar(46);
+        i = 8;
+        while (i < 11) { var c2: int = Fs.dirGet(idx, i); if (c2 != 32) { Output.printChar(c2); } i = i + 1; }
+    }
+
+    method requireFs() -> bool {
+        if (!Fs.isMounted()) { Output.printString("No FS"); Output.println(); return false; }
+        return true;
+    }
+
+    method parseHex(start: int) -> int {
+        var i: int = start;
+        var result: int = 0;
+        while ((i < this.len) & (this.buf[i] == 32)) { i = i + 1; }
+        if ((i + 1 < this.len) & (this.buf[i] == 48) & (this.upcase(this.buf[i + 1]) == 88)) { i = i + 2; }
+        while (i < this.len) {
+            var c: int = this.upcase(this.buf[i]);
+            if ((c >= 48) & (c <= 57)) { result = (result << 4) | (c - 48); }
+            else { if ((c >= 65) & (c <= 70)) { result = (result << 4) | (c - 55); } else { break; } }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    method printHex(val: int) {
+        var i: int = 3;
+        while (i > -1) {
+            var shift: int = i * 4;
+            var nibble: int = (val >> shift) & 15;
+            if (nibble < 10) { Output.printChar(48 + nibble); } else { Output.printChar(55 + nibble); }
+            i = i - 1;
+        }
+    }
+
+    method execCommand() {
+        var c0: int = this.upcase(this.buf[0]);
+        var c1: int = 0;
+        if (this.len > 1) { c1 = this.upcase(this.buf[1]); }
+        if (c0 == 63) { this.cmdHelp(); }
+        else if ((c0 == 67) & (c1 == 76)) { this.cmdCls(); }
+        else if ((c0 == 67) & (c1 == 82)) { this.cmdCreate(); }
+        else if ((c0 == 68) & (c1 == 73)) { this.cmdDir(); }
+        else if ((c0 == 68) & (c1 == 69)) { this.cmdDel(); }
+        else if ((c0 == 69) & (c1 == 67)) { this.cmdEcho(); }
+        else if ((c0 == 70) & (c1 == 79)) { this.cmdFormat(); }
+        else if ((c0 == 72) & (c1 == 65)) { this.cmdHalt(); }
+        else if ((c0 == 72) & (c1 == 69)) { this.cmdHelp(); }
+        else if ((c0 == 77) & (c1 == 79)) { this.cmdMount(); }
+        else if ((c0 == 80) & (c1 == 69)) { this.cmdPeek(); }
+        else if ((c0 == 80) & (c1 == 79)) { this.cmdPoke(); }
+        else if ((c0 == 82) & (c1 == 85)) { this.cmdRun(); }
+        else if ((c0 == 84) & (c1 == 89)) { this.cmdType(); }
+        else if ((c0 == 87) & (c1 == 82)) { this.cmdWrite(); }
+        else { Output.printString("Bad cmd"); Output.println(); }
+    }
+
+    method cmdHelp() {
+        Output.printString("RUN DIR TYPE CREATE WRITE DEL");
+        Output.println();
+        Output.printString("FORMAT MOUNT CLS ECHO PEEK POKE HALT");
+        Output.println();
+    }
+
+    method cmdCls() {
+        var i: int = 0;
+        while (i < 2400) { poke(0xEC00 + i, 0x0720); i = i + 1; }
+        Shell.drawHeader();
+    }
+
+    method cmdEcho() {
+        var i: int = this.argStart();
+        while (i < this.len) { Output.printChar(this.buf[i]); i = i + 1; }
+        Output.println();
+    }
+
+    method cmdDir() {
+        if (!this.requireFs()) { return; }
+        var count: int = 0;
+        var i: int = 0;
+        while (i < 16) {
+            if ((Fs.dirGet(i, 11) & 1) != 0) {
+                Output.printString("  ");
+                this.printDirName(i);
+                Output.printString("  ");
+                Output.printInt(Fs.dirGet(i, 13));
+                Output.println();
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        Output.printInt(count);
+        Output.printString(" file(s) ");
+        Output.printInt(Fs.getFreeCount());
+        Output.printString(" free");
+        Output.println();
+    }
+
+    method cmdType() {
+        if (!this.requireFs()) { return; }
+        var a: int = this.argStart();
+        if (a >= this.len) { return; }
+        if (!this.parseFilename(a)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("Not found"); Output.println(); return; }
+        var sz: int = Fs.dirGet(idx, 13);
+        if (sz == 0) { return; }
+        var curSec: int = Fs.dirGet(idx, 12);
+        var printed: int = 0;
+        var secBuf: int = Fs.getSec();
+        while ((curSec > 0) & (curSec < 256) & (printed < sz)) {
+            Disk.read(curSec, secBuf);
+            var j: int = 0;
+            while ((j < 128) & (printed < sz)) {
+                var ch: int = peek(secBuf + j);
+                if (ch == 10) { Output.println(); }
+                else if ((ch > 31) & (ch < 127)) { Output.printChar(ch); }
+                printed = printed + 1; j = j + 1;
+            }
+            var nxt: int = Fs.fatGet(curSec);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { curSec = 0; }
+            else { curSec = nxt; }
+        }
+        Output.println();
+    }
+
+    method cmdCreate() {
+        if (!this.requireFs()) { return; }
+        var a: int = this.argStart();
+        if (a >= this.len) { return; }
+        if (!this.parseFilename(a)) { return; }
+        var r: int = this.createParsedFile();
+        if (r == -2) { Output.printString("Exists"); }
+        else if (r == -1) { Output.printString("Dir full"); }
+        else { Output.printString("OK"); }
+        Output.println();
+    }
+
+    method cmdWrite() {
+        if (!this.requireFs()) { return; }
+        var a: int = this.argStart();
+        if (a >= this.len) { return; }
+        if (!this.parseFilename(a)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) {
+            idx = this.createParsedFile();
+            if (idx < 0) { return; }
+        }
+        Output.printString(". to end");
+        Output.println();
+        var wlen: int = 0;
+        loop {
+            this.readLine();
+            if ((this.len == 1) & (this.buf[0] == 46)) { break; }
+            if (wlen + this.len + 1 > 500) { break; }
+            var i: int = 0;
+            while (i < this.len) { poke(this.fbuf + wlen, this.buf[i]); wlen = wlen + 1; i = i + 1; }
+            poke(this.fbuf + wlen, 10); wlen = wlen + 1;
+        }
+        Fs.writeFileData(idx, this.fbuf, wlen);
+        Output.printString("Saved ");
+        Output.printInt(wlen);
+        Output.println();
+    }
+
+    method cmdDel() {
+        if (!this.requireFs()) { return; }
+        var a: int = this.argStart();
+        if (a >= this.len) { return; }
+        if (!this.parseFilename(a)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("Not found"); Output.println(); return; }
+        Output.printString("Y/N? ");
+        var key: int = Keyboard.readChar();
+        Output.printChar(key); Output.println();
+        if ((key == 89) | (key == 121)) {
+            Fs.deleteFile(idx);
+            Output.printString("OK"); Output.println();
+        }
+    }
+
+    method cmdFormat() {
+        Output.printString("Erase disk? Y/N ");
+        var key: int = Keyboard.readChar();
+        Output.printChar(key); Output.println();
+        if ((key != 89) & (key != 121)) { return; }
+        Fs.format();
+        Output.printString("Done. 251 free");
+        Output.println();
+    }
+
+    method cmdPeek() {
+        var a: int = this.argStart();
+        var addr: int = this.parseHex(a);
+        this.printHex(peek(addr));
+        Output.println();
+    }
+
+    method cmdPoke() {
+        var a: int = this.argStart();
+        var addr: int = this.parseHex(a);
+        var i: int = a;
+        while ((i < this.len) & (this.buf[i] != 32)) { i = i + 1; }
+        var val: int = this.parseHex(i);
+        poke(addr, val);
+    }
+
+    method cmdRun() {
+        if (!this.requireFs()) { return; }
+        var a: int = this.argStart();
+        if (a >= this.len) { Output.printString("Usage: RUN file"); Output.println(); return; }
+        if (!this.parseFilename(a)) { return; }
+        var idx: int = this.findParsedFile();
+        if (idx < 0) { Output.printString("Not found"); Output.println(); return; }
+        var sz: int = Fs.dirGet(idx, 13);
+        if (sz == 0) { Output.printString("Empty file"); Output.println(); return; }
+        // Build sector list at 0xEE00 for boot controller
+        var curSec: int = Fs.dirGet(idx, 12);
+        var count: int = 0;
+        while ((curSec > 0) & (curSec < 256) & (count < 251)) {
+            poke(0xEE01 + count, curSec);
+            count = count + 1;
+            var nxt: int = Fs.fatGet(curSec);
+            if ((nxt == 0xFFFF) | (nxt == 0) | (nxt == 0xFFFE)) { curSec = 0; }
+            else { curSec = nxt; }
+        }
+        poke(0xEE00, count);
+        Output.printString("Loading ");
+        Output.printInt(sz);
+        Output.printString(" words...");
+        Output.println();
+        // Write exec magic — boot controller will load sectors to RAM[0] and restart CPU
+        poke(0xEEFF, sz);
+        poke(0xEEFE, 0x4558);
+        halt();
+    }
+
+    method cmdMount() {
+        Fs.tryMount();
+        if (Fs.isMounted()) {
+            Output.printInt(Fs.getFreeCount());
+            Output.printString(" sectors free");
+        } else {
+            Output.printString("No FS");
+        }
+        Output.println();
+    }
+
+    method cmdHalt() {
+        Output.printString("Halted");
+        Output.println();
+        halt();
+    }
+}
+</textarea>
+        </div>
+      </div>
+
+      <!-- Screen area -->
+      <div class="screen-area">
+        <button class="toggle-setup" id="toggleSetup">&#9654;</button>
+        <div class="monitor-frame">
+          <canvas id="screen" width="640" height="480" tabindex="1"></canvas>
+        </div>
+        <span class="kb-hint">Klikk skjermen for tastatur</span>
+      </div>
+    </div>
+
+    <!-- Error panel -->
+    <div class="error-panel" id="errorPanel"></div>
+
+    <!-- Bottom bar -->
+    <div class="os-bottom">
+      <span class="status" id="status">Klar.</span>
+    </div>
+  </div>
+
+  <!-- Inlined assets for file:// compatibility -->
+<script type="text/js-worker" id="emuWorkerCode">
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+  var FAULT_FETCH = 16;
+  var FAULT_LOAD = 17;
+  var FAULT_STORE = 18;
+  var FAULT_STACK = 19;
+  var FAULT_PRIVILEGE = 20;
+  var FAULT_IO = 21;
+
+  var CPU = class _CPU {
+    constructor(memory) {
+      // Visible registers
+      __publicField(this, "A", 0);
+      __publicField(this, "D", 0);
+      __publicField(this, "B", 0);
+      __publicField(this, "SP", 0);
+      __publicField(this, "PC", 0);
+      // Control registers
+      __publicField(this, "STATUS", 0);
+      // [15..4:reserved][3:MODE][2:IE][1:N][0:Z]
+      __publicField(this, "EPC", 0);
+      __publicField(this, "CAUSE", 0);
+      __publicField(this, "BASE", 0);
+      __publicField(this, "LIMIT", 65535);
+      __publicField(this, "KSP", 0);
+      // State
+      __publicField(this, "halted", false);
+      __publicField(this, "doubleFault", false);
+      __publicField(this, "cycleCount", 0);
+      __publicField(this, "activeMode", false);
+      // The real execution mode: false=kernel, true=user
+      // Flags (cached from STATUS)
+      __publicField(this, "flagN", false);
+      __publicField(this, "flagZ", false);
+      __publicField(this, "memory");
+      __publicField(this, "inFaultHandler", false);
+      this.memory = memory;
+    }
+    get ie() {
+      return !!(this.STATUS & 4);
+    }
+    get mode() {
+      return this.activeMode;
+    }
+    // ============================================================
+    // Public API
+    // ============================================================
+    reset() {
+      this.A = 0;
+      this.D = 0;
+      this.B = 0;
+      this.SP = 0;
+      this.KSP = 0;
+      this.PC = 0;
+      this.STATUS = 0;
+      this.EPC = 0;
+      this.CAUSE = 0;
+      this.BASE = 0;
+      this.LIMIT = 65535;
+      this.flagN = false;
+      this.flagZ = false;
+      this.halted = false;
+      this.doubleFault = false;
+      this.inFaultHandler = false;
+      this.cycleCount = 0;
+      this.activeMode = false;
+    }
+    step() {
+      if (this.halted) return false;
+      this.checkInterrupts();
+      const fetchResult = this.translate(this.PC, "fetch");
+      if (fetchResult === null) return true;
+      const instruction = this.memory.read(fetchResult);
+      this.PC = this.PC + 1 & 65535;
+      this.execute(instruction);
+      this.cycleCount++;
+      return !this.halted;
+    }
+    run(maxSteps) {
+      let executed = 0;
+      while (executed < maxSteps && !this.halted) {
+        this.step();
+        executed++;
+      }
+      return executed;
+    }
+    /**
+     * High-performance batch execution.
+     * Inlines the entire fetch-decode-execute loop with registers in locals
+     * and direct RAM access. Falls back to step() for privileged/interrupt ops.
+     * Returns number of cycles executed.
+     */
+    runFast(maxCycles) {
+      if (this.halted) return 0;
+      const ram = this.memory.ram;
+      let A = this.A;
+      let D = this.D;
+      let B = this.B;
+      let SP = this.SP;
+      let PC = this.PC;
+      let fN = this.flagN;
+      let fZ = this.flagZ;
+      let cycles = 0;
+      const canFast = !this.activeMode && !(this.STATUS & 4);
+      if (!canFast) {
+        while (cycles < maxCycles && !this.halted) {
+          this.step();
+          cycles++;
+        }
+        return cycles;
+      }
+      while (cycles < maxCycles) {
+        const instr = ram[PC];
+        PC = PC + 1 & 65535;
+        const op = instr >> 12 & 15;
+        switch (op) {
+          case 0: {
+            const dst = instr >> 10 & 3;
+            const imm10 = instr & 1023;
+            const val = (imm10 & 1023 ^ 512) - 512 & 65535;
+            switch (dst) {
+              case 0:
+                A = val;
+                break;
+              case 1:
+                D = val;
+                break;
+              case 2:
+                B = val;
+                break;
+              case 3:
+                SP = val;
+                break;
+            }
+            break;
+          }
+          case 1: {
+            const dst = instr >> 10 & 3;
+            const imm6 = instr & 63;
+            let cur;
+            switch (dst) {
+              case 0:
+                cur = A;
+                break;
+              case 1:
+                cur = D;
+                break;
+              case 2:
+                cur = B;
+                break;
+              default:
+                cur = SP;
+                break;
+            }
+            const res = cur & 1023 | (imm6 & 63) << 10;
+            switch (dst) {
+              case 0:
+                A = res;
+                break;
+              case 1:
+                D = res;
+                break;
+              case 2:
+                B = res;
+                break;
+              case 3:
+                SP = res;
+                break;
+            }
+            break;
+          }
+          case 2: {
+            const dst = instr >> 10 & 3;
+            const src = instr >> 8 & 3;
+            let a, b;
+            switch (dst) {
+              case 0:
+                a = A;
+                break;
+              case 1:
+                a = D;
+                break;
+              case 2:
+                a = B;
+                break;
+              default:
+                a = SP;
+                break;
+            }
+            switch (src) {
+              case 0:
+                b = A;
+                break;
+              case 1:
+                b = D;
+                break;
+              case 2:
+                b = B;
+                break;
+              default:
+                b = SP;
+                break;
+            }
+            const r = a + b & 65535;
+            switch (dst) {
+              case 0:
+                A = r;
+                break;
+              case 1:
+                D = r;
+                break;
+              case 2:
+                B = r;
+                break;
+              case 3:
+                SP = r;
+                break;
+            }
+            fZ = r === 0;
+            fN = !!(r & 32768);
+            break;
+          }
+          case 3: {
+            const dst = instr >> 10 & 3;
+            const src = instr >> 8 & 3;
+            let a, b;
+            switch (dst) {
+              case 0:
+                a = A;
+                break;
+              case 1:
+                a = D;
+                break;
+              case 2:
+                a = B;
+                break;
+              default:
+                a = SP;
+                break;
+            }
+            switch (src) {
+              case 0:
+                b = A;
+                break;
+              case 1:
+                b = D;
+                break;
+              case 2:
+                b = B;
+                break;
+              default:
+                b = SP;
+                break;
+            }
+            const r = a - b & 65535;
+            switch (dst) {
+              case 0:
+                A = r;
+                break;
+              case 1:
+                D = r;
+                break;
+              case 2:
+                B = r;
+                break;
+              case 3:
+                SP = r;
+                break;
+            }
+            fZ = r === 0;
+            fN = !!(r & 32768);
+            break;
+          }
+          case 4: {
+            const dst = instr >> 10 & 3;
+            const src = instr >> 8 & 3;
+            let a, b;
+            switch (dst) {
+              case 0:
+                a = A;
+                break;
+              case 1:
+                a = D;
+                break;
+              case 2:
+                a = B;
+                break;
+              default:
+                a = SP;
+                break;
+            }
+            switch (src) {
+              case 0:
+                b = A;
+                break;
+              case 1:
+                b = D;
+                break;
+              case 2:
+                b = B;
+                break;
+              default:
+                b = SP;
+                break;
+            }
+            const r = a & b;
+            switch (dst) {
+              case 0:
+                A = r;
+                break;
+              case 1:
+                D = r;
+                break;
+              case 2:
+                B = r;
+                break;
+              case 3:
+                SP = r;
+                break;
+            }
+            fZ = r === 0;
+            fN = !!(r & 32768);
+            break;
+          }
+          case 5: {
+            const dst = instr >> 10 & 3;
+            const src = instr >> 8 & 3;
+            let a, b;
+            switch (dst) {
+              case 0:
+                a = A;
+                break;
+              case 1:
+                a = D;
+                break;
+              case 2:
+                a = B;
+                break;
+              default:
+                a = SP;
+                break;
+            }
+            switch (src) {
+              case 0:
+                b = A;
+                break;
+              case 1:
+                b = D;
+                break;
+              case 2:
+                b = B;
+                break;
+              default:
+                b = SP;
+                break;
+            }
+            const r = a | b;
+            switch (dst) {
+              case 0:
+                A = r;
+                break;
+              case 1:
+                D = r;
+                break;
+              case 2:
+                B = r;
+                break;
+              case 3:
+                SP = r;
+                break;
+            }
+            fZ = r === 0;
+            fN = !!(r & 32768);
+            break;
+          }
+          case 6: {
+            const dst = instr >> 10 & 3;
+            const subOp = instr >> 7 & 7;
+            const src = instr >> 5 & 3;
+            let a;
+            switch (dst) {
+              case 0:
+                a = A;
+                break;
+              case 1:
+                a = D;
+                break;
+              case 2:
+                a = B;
+                break;
+              default:
+                a = SP;
+                break;
+            }
+            let r;
+            switch (subOp) {
+              case 0:
+                r = ~a & 65535;
+                break;
+              // NOT
+              case 1:
+                r = a << 1 & 65535;
+                break;
+              // SHL
+              case 2: {
+                const s = a & 32768 ? a | ~65535 : a;
+                r = s >> 1 & 65535;
+                break;
+              }
+              // ASR
+              case 3: {
+                switch (src) {
+                  case 0:
+                    r = A;
+                    break;
+                  case 1:
+                    r = D;
+                    break;
+                  case 2:
+                    r = B;
+                    break;
+                  default:
+                    r = SP;
+                    break;
+                }
+                r &= 65535;
+                break;
+              }
+              // MOV
+              case 4: {
+                let sv;
+                switch (src) {
+                  case 0:
+                    sv = A;
+                    break;
+                  case 1:
+                    sv = D;
+                    break;
+                  case 2:
+                    sv = B;
+                    break;
+                  default:
+                    sv = SP;
+                    break;
+                }
+                r = (a ^ sv) & 65535;
+                break;
+              }
+              // XOR
+              default:
+                r = 0;
+            }
+            switch (dst) {
+              case 0:
+                A = r;
+                break;
+              case 1:
+                D = r;
+                break;
+              case 2:
+                B = r;
+                break;
+              case 3:
+                SP = r;
+                break;
+            }
+            fZ = r === 0;
+            fN = !!(r & 32768);
+            break;
+          }
+          case 7: {
+            const dst = instr >> 10 & 3;
+            const off8 = instr & 255;
+            const offset = (off8 ^ 128) - 128;
+            const addr = A + offset & 65535;
+            let val;
+            if (addr >= 65280) {
+              val = this.memory.read(addr);
+            } else {
+              val = ram[addr];
+            }
+            switch (dst) {
+              case 0:
+                A = val;
+                break;
+              case 1:
+                D = val;
+                break;
+              case 2:
+                B = val;
+                break;
+              case 3:
+                SP = val;
+                break;
+            }
+            break;
+          }
+          case 8: {
+            const src = instr >> 10 & 3;
+            const off8 = instr & 255;
+            const offset = (off8 ^ 128) - 128;
+            const addr = A + offset & 65535;
+            let sv;
+            switch (src) {
+              case 0:
+                sv = A;
+                break;
+              case 1:
+                sv = D;
+                break;
+              case 2:
+                sv = B;
+                break;
+              default:
+                sv = SP;
+                break;
+            }
+            if (addr >= 65280) {
+              this.memory.write(addr, sv);
+            } else {
+              ram[addr] = sv & 65535;
+            }
+            break;
+          }
+          case 9: {
+            const nzp = instr >> 9 & 7;
+            const off9 = instr & 511;
+            const offset = (off9 ^ 256) - 256;
+            const n = nzp & 4 ? fN : false;
+            const z = nzp & 2 ? fZ : false;
+            const p = nzp & 1 ? !fN && !fZ : false;
+            if (n || z || p) PC = PC + offset & 65535;
+            break;
+          }
+          case 10: {
+            PC = A & 65535;
+            break;
+          }
+          case 11: {
+            SP = SP - 1 & 65535;
+            ram[SP] = PC;
+            PC = A & 65535;
+            break;
+          }
+          case 12: {
+            const dir = instr >> 11 & 1;
+            const reg = instr >> 9 & 3;
+            if (dir === 0) {
+              let v;
+              switch (reg) {
+                case 0:
+                  v = A;
+                  break;
+                case 1:
+                  v = D;
+                  break;
+                case 2:
+                  v = B;
+                  break;
+                default:
+                  v = SP;
+                  break;
+              }
+              SP = SP - 1 & 65535;
+              ram[SP] = v;
+            } else {
+              const v = ram[SP];
+              if (reg === 3) {
+                SP = v;
+              } else {
+                switch (reg) {
+                  case 0:
+                    A = v;
+                    break;
+                  case 1:
+                    D = v;
+                    break;
+                  case 2:
+                    B = v;
+                    break;
+                }
+                SP = SP + 1 & 65535;
+              }
+            }
+            break;
+          }
+          case 13:
+          // TRAP
+          case 14: {
+            this.A = A;
+            this.D = D;
+            this.B = B;
+            this.SP = SP;
+            this.PC = PC - 1 & 65535;
+            this.flagN = fN;
+            this.flagZ = fZ;
+            this.STATUS = this.STATUS & ~3 | (fN ? 2 : 0) | (fZ ? 1 : 0);
+            this.cycleCount += cycles;
+            this.step();
+            if (this.halted || this.activeMode || this.STATUS & 4) {
+              return cycles + 1;
+            }
+            A = this.A;
+            D = this.D;
+            B = this.B;
+            SP = this.SP;
+            PC = this.PC;
+            fN = this.flagN;
+            fZ = this.flagZ;
+            cycles++;
+            continue;
+          }
+          case 15: {
+            PC = ram[SP];
+            SP = SP + 1 & 65535;
+            break;
+          }
+        }
+        cycles++;
+      }
+      this.A = A;
+      this.D = D;
+      this.B = B;
+      this.SP = SP;
+      this.PC = PC;
+      this.flagN = fN;
+      this.flagZ = fZ;
+      this.STATUS = this.STATUS & ~3 | (fN ? 2 : 0) | (fZ ? 1 : 0);
+      this.cycleCount += cycles;
+      return cycles;
+    }
+    getState() {
+      return {
+        A: this.A & 65535,
+        D: this.D & 65535,
+        B: this.B & 65535,
+        SP: this.SP & 65535,
+        PC: this.PC & 65535,
+        STATUS: this.STATUS & 65535,
+        EPC: this.EPC & 65535,
+        CAUSE: this.CAUSE & 65535,
+        BASE: this.BASE & 65535,
+        LIMIT: this.LIMIT & 65535,
+        KSP: this.KSP & 65535,
+        flagN: this.flagN,
+        flagZ: this.flagZ,
+        ie: this.ie,
+        mode: this.mode,
+        cycleCount: this.cycleCount
+      };
+    }
+    // ============================================================
+    // Address translation & memory protection
+    // ============================================================
+    translate(virtualAddr, accessType) {
+      const addr = virtualAddr & 65535;
+      if (!this.mode) {
+        return addr;
+      }
+      if (addr >= 65280) {
+        this.raiseFault(FAULT_IO);
+        return null;
+      }
+      if (addr >= this.LIMIT) {
+        const faultMap = {
+          "fetch": FAULT_FETCH,
+          "load": FAULT_LOAD,
+          "store": FAULT_STORE,
+          "stack": FAULT_STACK
+        };
+        this.raiseFault(faultMap[accessType]);
+        return null;
+      }
+      return this.BASE + addr & 65535;
+    }
+    // ============================================================
+    // Fault system
+    // ============================================================
+    raiseFault(cause) {
+      if (this.inFaultHandler) {
+        this.doubleFault = true;
+        this.halted = true;
+        return;
+      }
+      this.inFaultHandler = true;
+      this.EPC = this.PC - 1 & 65535;
+      this.CAUSE = (this.STATUS & 255) << 8 | cause & 255;
+      const oldStatus = this.STATUS;
+      const wasUser = !!(oldStatus & 8);
+      this.STATUS = oldStatus & ~12;
+      this.activeMode = false;
+      if (wasUser) {
+        const tmp = this.SP;
+        this.SP = this.KSP;
+        this.KSP = tmp;
+      }
+      this.PC = 12;
+    }
+    // ============================================================
+    // Interrupt system
+    // ============================================================
+    checkInterrupts() {
+      if (!this.ie) return;
+      const pending = this.memory.read(65520);
+      const mask = this.memory.read(65521);
+      const active = pending & mask;
+      if (active === 0) return;
+      let irq = 0;
+      for (let i = 0; i < 8; i++) {
+        if (active & 1 << i) {
+          irq = i;
+          break;
+        }
+      }
+      this.EPC = this.PC;
+      this.CAUSE = (this.STATUS & 255) << 8 | irq & 255;
+      this.memory.write(65520, 1 << irq);
+      const oldStatus = this.STATUS;
+      const wasUser = !!(oldStatus & 8);
+      this.STATUS = oldStatus & ~12;
+      this.activeMode = false;
+      if (wasUser) {
+        const tmp = this.SP;
+        this.SP = this.KSP;
+        this.KSP = tmp;
+      }
+      this.PC = 4;
+    }
+    // ============================================================
+    // Instruction execution
+    // ============================================================
+    execute(instruction) {
+      const opcode = instruction >> 12 & 15;
+      switch (opcode) {
+        case 0:
+          this.execLDI(instruction);
+          break;
+        case 1:
+          this.execLDU(instruction);
+          break;
+        case 2:
+          this.execALU(instruction, "ADD");
+          break;
+        case 3:
+          this.execALU(instruction, "SUB");
+          break;
+        case 4:
+          this.execALU(instruction, "AND");
+          break;
+        case 5:
+          this.execALU(instruction, "OR");
+          break;
+        case 6:
+          this.execALU2(instruction);
+          break;
+        case 7:
+          this.execLOAD(instruction);
+          break;
+        case 8:
+          this.execSTORE(instruction);
+          break;
+        case 9:
+          this.execBR(instruction);
+          break;
+        case 10:
+          this.execJMP();
+          break;
+        case 11:
+          this.execCALL();
+          break;
+        case 12:
+          this.execSTACK(instruction);
+          break;
+        case 13:
+          this.execTRAP(instruction);
+          break;
+        case 14:
+          this.execSYS(instruction);
+          break;
+        case 15:
+          this.execRET();
+          break;
+      }
+    }
+    // --- Register read/write helpers ---
+    readReg(idx) {
+      switch (idx & 3) {
+        case 0:
+          return this.A & 65535;
+        case 1:
+          return this.D & 65535;
+        case 2:
+          return this.B & 65535;
+        case 3:
+          return this.SP & 65535;
+        default:
+          return 0;
+      }
+    }
+    writeReg(idx, value) {
+      const v = value & 65535;
+      switch (idx & 3) {
+        case 0:
+          this.A = v;
+          break;
+        case 1:
+          this.D = v;
+          break;
+        case 2:
+          this.B = v;
+          break;
+        case 3:
+          this.SP = v;
+          break;
+      }
+    }
+    updateFlags(value) {
+      const v = value & 65535;
+      this.flagZ = v === 0;
+      this.flagN = !!(v & 32768);
+      this.STATUS = this.STATUS & ~3 | (this.flagN ? 2 : 0) | (this.flagZ ? 1 : 0);
+    }
+    signExtend(value, bits) {
+      const mask = 1 << bits - 1;
+      const val = value & (1 << bits) - 1;
+      return (val ^ mask) - mask;
+    }
+    // --- Instruction implementations ---
+    execLDI(instr) {
+      const dst = instr >> 10 & 3;
+      const imm10 = instr & 1023;
+      const value = this.signExtend(imm10, 10) & 65535;
+      this.writeReg(dst, value);
+    }
+    execLDU(instr) {
+      const dst = instr >> 10 & 3;
+      const imm6 = instr & 63;
+      const current = this.readReg(dst);
+      const result = current & 1023 | (imm6 & 63) << 10;
+      this.writeReg(dst, result);
+    }
+    execALU(instr, op) {
+      const dst = instr >> 10 & 3;
+      const src = instr >> 8 & 3;
+      const a = this.readReg(dst);
+      const b = this.readReg(src);
+      let result;
+      switch (op) {
+        case "ADD":
+          result = a + b & 65535;
+          break;
+        case "SUB":
+          result = a - b & 65535;
+          break;
+        case "AND":
+          result = a & b;
+          break;
+        case "OR":
+          result = a | b;
+          break;
+        default:
+          result = 0;
+      }
+      this.writeReg(dst, result);
+      this.updateFlags(result);
+    }
+    execALU2(instr) {
+      const dst = instr >> 10 & 3;
+      const subOp = instr >> 7 & 7;
+      const src = instr >> 5 & 3;
+      const a = this.readReg(dst);
+      let result;
+      switch (subOp) {
+        case 0:
+          result = ~a & 65535;
+          break;
+        // NOT
+        case 1:
+          result = a << 1 & 65535;
+          break;
+        // SHL
+        case 2: {
+          const signed = a & 32768 ? a | ~65535 : a;
+          result = signed >> 1 & 65535;
+          break;
+        }
+        case 3:
+          result = this.readReg(src) & 65535;
+          break;
+        // MOV
+        case 4:
+          result = (a ^ this.readReg(src)) & 65535;
+          break;
+        // XOR
+        default:
+          result = 0;
+      }
+      this.writeReg(dst, result);
+      this.updateFlags(result);
+    }
+    execLOAD(instr) {
+      const dst = instr >> 10 & 3;
+      const offset = this.signExtend(instr & 255, 8);
+      const addr = this.A + offset & 65535;
+      const physAddr = this.translate(addr, "load");
+      if (physAddr === null) return;
+      this.writeReg(dst, this.memory.read(physAddr));
+    }
+    execSTORE(instr) {
+      const src = instr >> 10 & 3;
+      const offset = this.signExtend(instr & 255, 8);
+      const addr = this.A + offset & 65535;
+      const physAddr = this.translate(addr, "store");
+      if (physAddr === null) return;
+      this.memory.write(physAddr, this.readReg(src));
+    }
+    execBR(instr) {
+      const nzp = instr >> 9 & 7;
+      const offset = this.signExtend(instr & 511, 9);
+      const n = nzp & 4 ? this.flagN : false;
+      const z = nzp & 2 ? this.flagZ : false;
+      const p = nzp & 1 ? !this.flagN && !this.flagZ : false;
+      if (n || z || p) {
+        this.PC = this.PC + offset & 65535;
+      }
+    }
+    execJMP() {
+      this.PC = this.A & 65535;
+    }
+    execCALL() {
+      this.SP = this.SP - 1 & 65535;
+      const physAddr = this.translate(this.SP, "stack");
+      if (physAddr === null) return;
+      this.memory.write(physAddr, this.PC);
+      this.PC = this.A & 65535;
+    }
+    execRET() {
+      const physAddr = this.translate(this.SP, "stack");
+      if (physAddr === null) return;
+      this.PC = this.memory.read(physAddr);
+      this.SP = this.SP + 1 & 65535;
+    }
+    execSTACK(instr) {
+      const dir = instr >> 11 & 1;
+      const reg = instr >> 9 & 3;
+      if (dir === 0) {
+        const value = this.readReg(reg);
+        this.SP = this.SP - 1 & 65535;
+        const physAddr = this.translate(this.SP, "stack");
+        if (physAddr === null) return;
+        this.memory.write(physAddr, value);
+      } else {
+        const physAddr = this.translate(this.SP, "stack");
+        if (physAddr === null) return;
+        const value = this.memory.read(physAddr);
+        if (reg === 3) {
+          this.SP = value;
+        } else {
+          this.writeReg(reg, value);
+          this.SP = this.SP + 1 & 65535;
+        }
+      }
+    }
+    execTRAP(instr) {
+      const trapNum = instr & 4095;
+      this.EPC = this.PC;
+      this.CAUSE = trapNum;
+      const oldStatus = this.STATUS;
+      const wasUser = !!(oldStatus & 8);
+      this.STATUS = oldStatus & ~12;
+      this.activeMode = false;
+      if (wasUser) {
+        const tmp = this.SP;
+        this.SP = this.KSP;
+        this.KSP = tmp;
+      }
+      this.PC = 8;
+    }
+    execSYS(instr) {
+      const subOp = instr >> 8 & 15;
+      if (this.mode) {
+        this.raiseFault(FAULT_PRIVILEGE);
+        return;
+      }
+      switch (subOp) {
+        case 0: {
+          const targetIsUser = !!(this.STATUS & 8);
+          if (targetIsUser) {
+            const tmp = this.SP;
+            this.SP = this.KSP;
+            this.KSP = tmp;
+          }
+          this.PC = this.EPC;
+          this.activeMode = targetIsUser;
+          this.inFaultHandler = false;
+          break;
+        }
+        case 1: {
+          const dst = instr >> 6 & 3;
+          const cr = instr >> 3 & 7;
+          this.writeReg(dst, this.readCtrlReg(cr));
+          break;
+        }
+        case 2: {
+          const src = instr >> 6 & 3;
+          const cr = instr >> 3 & 7;
+          this.writeCtrlReg(cr, this.readReg(src));
+          break;
+        }
+        case 3: {
+          this.halted = true;
+          break;
+        }
+      }
+    }
+    // ============================================================
+    // Control register access
+    // ============================================================
+    readCtrlReg(idx) {
+      switch (idx) {
+        case 0:
+          return this.STATUS & 65535;
+        case 1:
+          return this.EPC & 65535;
+        case 2:
+          return this.CAUSE & 65535;
+        case 3:
+          return this.BASE & 65535;
+        case 4:
+          return this.LIMIT & 65535;
+        case 5:
+          return this.KSP & 65535;
+        default:
+          return 0;
+      }
+    }
+    writeCtrlReg(idx, value) {
+      const v = value & 65535;
+      switch (idx) {
+        case 0:
+          this.STATUS = v;
+          this.flagN = !!(v & 2);
+          this.flagZ = !!(v & 1);
+          this.activeMode = !!(v & 8);
+          break;
+        case 1:
+          this.EPC = v;
+          break;
+        case 2:
+          this.CAUSE = v;
+          break;
+        case 3:
+          this.BASE = v;
+          break;
+        case 4:
+          this.LIMIT = v;
+          break;
+        case 5:
+          this.KSP = v;
+          break;
+      }
+    }
+    // ============================================================
+    // Disassembler (static)
+    // ============================================================
+    static disassemble(instruction) {
+      const opcode = instruction >> 12 & 15;
+      const regNames = ["A", "D", "B", "SP"];
+      const ctrlRegNames = ["STATUS", "EPC", "CAUSE", "BASE", "LIMIT", "KSP"];
+      const dst = instruction >> 10 & 3;
+      const src8 = instruction >> 8 & 3;
+      const signExtend = (val, bits) => {
+        const mask = 1 << bits - 1;
+        const v = val & (1 << bits) - 1;
+        return (v ^ mask) - mask;
+      };
+      switch (opcode) {
+        case 0:
+          return `LDI ${regNames[dst]}, ${signExtend(instruction & 1023, 10)}`;
+        case 1:
+          return `LDU ${regNames[dst]}, ${instruction & 63}`;
+        case 2:
+          return `ADD ${regNames[dst]}, ${regNames[src8]}`;
+        case 3:
+          return `SUB ${regNames[dst]}, ${regNames[src8]}`;
+        case 4:
+          return `AND ${regNames[dst]}, ${regNames[src8]}`;
+        case 5:
+          return `OR ${regNames[dst]}, ${regNames[src8]}`;
+        case 6: {
+          const subOp = instruction >> 7 & 7;
+          const src5 = instruction >> 5 & 3;
+          const ops = ["NOT", "SHL", "ASR", "MOV", "XOR"];
+          if (subOp < 3) return `${ops[subOp]} ${regNames[dst]}`;
+          if (subOp < 5) return `${ops[subOp]} ${regNames[dst]}, ${regNames[src5]}`;
+          return `ALU2 ???`;
+        }
+        case 7:
+          return `LOAD ${regNames[dst]}, [A+${signExtend(instruction & 255, 8)}]`;
+        case 8:
+          return `STORE ${regNames[dst]}, [A+${signExtend(instruction & 255, 8)}]`;
+        case 9: {
+          const nzp = instruction >> 9 & 7;
+          const off9 = signExtend(instruction & 511, 9);
+          if (nzp === 0) return "NOP";
+          const conds = { 1: "BRP", 2: "BRZ", 3: "BRZP", 4: "BRN", 5: "BRNP", 6: "BRNZ", 7: "BRA" };
+          return `${conds[nzp] || "BR"} ${off9}`;
+        }
+        case 10:
+          return "JMP";
+        case 11:
+          return "CALL";
+        case 12: {
+          const dir = instruction >> 11 & 1;
+          const reg = instruction >> 9 & 3;
+          return `${dir ? "POP" : "PUSH"} ${regNames[reg]}`;
+        }
+        case 13:
+          return `TRAP ${instruction & 4095}`;
+        case 14: {
+          const subOp2 = instruction >> 8 & 15;
+          if (subOp2 === 0) return "IRET";
+          if (subOp2 === 3) return "HALT";
+          if (subOp2 === 1) {
+            const d = instruction >> 6 & 3;
+            const cr = instruction >> 3 & 7;
+            return `RDCTL ${regNames[d]}, ${ctrlRegNames[cr] || "???"}`;
+          }
+          if (subOp2 === 2) {
+            const s = instruction >> 6 & 3;
+            const cr = instruction >> 3 & 7;
+            return `WRCTL ${ctrlRegNames[cr] || "???"}, ${regNames[s]}`;
+          }
+          return `SYS ???`;
+        }
+        case 15:
+          return "RET";
+        default:
+          return "???";
+      }
+    }
+  };
+
+  // src/memory.ts
+
+  var Memory = class {
+    constructor() {
+      __publicField(this, "ram");
+      __publicField(this, "ioDevices", /* @__PURE__ */ new Map());
+      __publicField(this, "onWriteCallback", null);
+      this.ram = new Uint16Array(65536);
+    }
+    read(address) {
+      const addr = address & 65535;
+      if (addr >= 65280) {
+        const base = addr & 65520;
+        const device = this.ioDevices.get(base);
+        if (device) return device.read(addr - base);
+        return 0;
+      }
+      return this.ram[addr];
+    }
+    write(address, value) {
+      const addr = address & 65535;
+      const val = value & 65535;
+      if (addr >= 65280) {
+        const base = addr & 65520;
+        const device = this.ioDevices.get(base);
+        if (device) device.write(addr - base, val);
+        return;
+      }
+      this.ram[addr] = val;
+      this.onWriteCallback?.(addr, val);
+    }
+    loadProgram(code) {
+      for (let i = 0; i < code.length && i < this.ram.length; i++) {
+        this.ram[i] = code[i];
+      }
+      // Set heap free-pointer (used by Memory.alloc) to start after loaded code
+      if (code.length < 60401) this.ram[60401] = code.length;
+    }
+    clear() {
+      this.ram.fill(0);
+    }
+    registerDevice(baseAddress, device) {
+      this.ioDevices.set(baseAddress & 65520, device);
+    }
+    onWrite(callback) {
+      this.onWriteCallback = callback;
+    }
+  };
+
+  // src/graphics.ts
+
+  var DisplayController = class {
+    constructor() {
+      __publicField(this, "mode", 0);
+      // 0=text, 1=pixel
+      __publicField(this, "cursorPos", 0);
+      // Position in text mode
+      __publicField(this, "onModeChange", null);
+    }
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.mode;
+        case 1:
+          return this.cursorPos;
+        default:
+          return 0;
+      }
+    }
+    write(offset, value) {
+      switch (offset) {
+        case 0:
+          this.mode = value & 1;
+          this.onModeChange?.(this.mode);
+          break;
+        case 1:
+          this.cursorPos = value & 65535;
+          break;
+      }
+    }
+    setModeChangeCallback(cb) {
+      this.onModeChange = cb;
+    }
+    getMode() {
+      return this.mode;
+    }
+    getCursorPos() {
+      return this.cursorPos;
+    }
+  };
+
+  // src/devices/keyboard.ts
+
+  var Keyboard = class {
+    constructor() {
+      __publicField(this, "status", 0);
+      // bit 0: key available
+      __publicField(this, "data", 0);
+      // ASCII keycode
+      __publicField(this, "pendingInterrupt", false);
+    }
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.status;
+        case 1: {
+          const val = this.data;
+          this.status = 0;
+          return val;
+        }
+        default:
+          return 0;
+      }
+    }
+    write(_offset, _value) {
+    }
+    /**
+     * Called by the UI when a key is pressed.
+     */
+    keyDown(ascii) {
+      this.data = ascii & 255;
+      this.status = 1;
+      this.pendingInterrupt = true;
+    }
+    /**
+     * Check and consume interrupt.
+     */
+    hasPendingInterrupt() {
+      if (this.pendingInterrupt) {
+        this.pendingInterrupt = false;
+        return true;
+      }
+      return false;
+    }
+  };
+
+  // src/devices/system.ts
+
+  var SystemControl = class {
+    constructor() {
+      __publicField(this, "pending", 0);
+      // Pending interrupt bitmask
+      __publicField(this, "mask", 0);
+    }
+    // Interrupt enable mask
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.pending;
+        case 1:
+          return this.mask;
+        default:
+          return 0;
+      }
+    }
+    write(offset, value) {
+      switch (offset) {
+        case 0:
+          this.pending &= ~(value & 65535);
+          break;
+        case 1:
+          this.mask = value & 65535;
+          break;
+      }
+    }
+    /**
+     * Set a pending interrupt bit.
+     * @param bit Interrupt source bit (0=timer, 1=keyboard, 2=UART RX, etc.)
+     */
+    setInterrupt(bit) {
+      this.pending |= 1 << bit;
+    }
+    /**
+     * Clear a pending interrupt bit.
+     */
+    clearInterrupt(bit) {
+      this.pending &= ~(1 << bit);
+    }
+    /**
+     * Check if any active (pending & masked) interrupts exist.
+     */
+    hasActiveInterrupt() {
+      return (this.pending & this.mask) !== 0;
+    }
+    getPending() {
+      return this.pending;
+    }
+    getMask() {
+      return this.mask;
+    }
+  };
+
+  // src/devices/timer.ts
+
+  var Timer = class {
+    constructor() {
+      __publicField(this, "control", 0);
+      // bit 0: enabled
+      __publicField(this, "interval", 0);
+      // cycles between interrupts
+      __publicField(this, "counter", 0);
+      // current count
+      __publicField(this, "pendingInterrupt", false);
+    }
+    get enabled() {
+      return !!(this.control & 1);
+    }
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.control;
+        case 1:
+          return this.interval;
+        case 2:
+          return this.counter & 65535;
+        default:
+          return 0;
+      }
+    }
+    write(offset, value) {
+      switch (offset) {
+        case 0:
+          this.control = value & 1;
+          if (!this.enabled) this.counter = 0;
+          break;
+        case 1:
+          this.interval = value & 65535;
+          this.counter = 0;
+          break;
+      }
+    }
+    /**
+     * Advance the timer by one CPU cycle.
+     * Returns true if an interrupt should fire.
+     */
+    tick() {
+      if (!this.enabled || this.interval === 0) return false;
+      this.counter++;
+      if (this.counter >= this.interval) {
+        this.counter = 0;
+        this.pendingInterrupt = true;
+        return true;
+      }
+      return false;
+    }
+    hasPendingInterrupt() {
+      if (this.pendingInterrupt) {
+        this.pendingInterrupt = false;
+        return true;
+      }
+      return false;
+    }
+  };
+
+  // src/devices/uart.ts
+
+  var UART = class {
+    constructor() {
+      __publicField(this, "txStatus", 1);
+      // Ready to send (always ready in emulator)
+      __publicField(this, "rxStatus", 0);
+      // No data
+      __publicField(this, "rxData", 0);
+      // Received byte
+      __publicField(this, "pendingTxInterrupt", false);
+      __publicField(this, "pendingRxInterrupt", false);
+      __publicField(this, "onOutput", null);
+    }
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.txStatus;
+        case 1:
+          return 0;
+        // TX data is write-only
+        case 2:
+          return this.rxStatus;
+        case 3: {
+          const val = this.rxData;
+          this.rxStatus = 0;
+          return val;
+        }
+        default:
+          return 0;
+      }
+    }
+    write(offset, value) {
+      switch (offset) {
+        case 1:
+          this.onOutput?.(value & 255);
+          this.txStatus = 1;
+          this.pendingTxInterrupt = true;
+          break;
+      }
+    }
+    /**
+     * Feed a character into the UART receive buffer (from UI).
+     */
+    receive(ascii) {
+      this.rxData = ascii & 255;
+      this.rxStatus = 1;
+      this.pendingRxInterrupt = true;
+    }
+    /**
+     * Set callback for output characters.
+     */
+    setOutputCallback(cb) {
+      this.onOutput = cb;
+    }
+    hasPendingRxInterrupt() {
+      if (this.pendingRxInterrupt) {
+        this.pendingRxInterrupt = false;
+        return true;
+      }
+      return false;
+    }
+    hasPendingTxInterrupt() {
+      if (this.pendingTxInterrupt) {
+        this.pendingTxInterrupt = false;
+        return true;
+      }
+      return false;
+    }
+  };
+
+  // src/devices/sound.ts
+
+  var SECTOR_SIZE = 128;
+  var DISK_SECTORS = 256;
+  var DiskController = class {
+    constructor() {
+      __publicField(this, "command", 0);
+      __publicField(this, "sector", 0);
+      __publicField(this, "memAddr", 0);
+      __publicField(this, "status", 0);
+      // bit0: busy, bit1: done, bit2: error
+      __publicField(this, "pendingInterrupt", false);
+      // Disk storage (256 sectors × 128 words)
+      __publicField(this, "storage", new Uint16Array(DISK_SECTORS * SECTOR_SIZE));
+      // Reference to main memory for DMA
+      __publicField(this, "dmaRead", null);
+      __publicField(this, "dmaWrite", null);
+    }
+    read(offset) {
+      switch (offset) {
+        case 0:
+          return this.command;
+        case 1:
+          return this.sector;
+        case 2:
+          return this.memAddr;
+        case 3:
+          return this.status;
+        default:
+          return 0;
+      }
+    }
+    write(offset, value) {
+      switch (offset) {
+        case 0:
+          this.command = value & 3;
+          if (this.command > 0) this.executeCommand();
+          break;
+        case 1:
+          this.sector = value & 255;
+          break;
+        case 2:
+          this.memAddr = value & 65535;
+          break;
+      }
+    }
+    setDMA(read, write) {
+      this.dmaRead = read;
+      this.dmaWrite = write;
+    }
+    executeCommand() {
+      if (this.sector >= DISK_SECTORS) {
+        this.status = 4;
+        this.command = 0;
+        return;
+      }
+      const endAddr = this.memAddr + SECTOR_SIZE - 1;
+      if (this.memAddr >= 65280 || endAddr >= 65280) {
+        this.status = 4;
+        this.command = 0;
+        return;
+      }
+      this.status = 1;
+      const diskOffset = this.sector * SECTOR_SIZE;
+      if (this.command === 1 && this.dmaWrite) {
+        for (let i = 0; i < SECTOR_SIZE; i++) {
+          this.dmaWrite(this.memAddr + i, this.storage[diskOffset + i]);
+        }
+      } else if (this.command === 2 && this.dmaRead) {
+        for (let i = 0; i < SECTOR_SIZE; i++) {
+          this.storage[diskOffset + i] = this.dmaRead(this.memAddr + i);
+        }
+      }
+      this.status = 2;
+      this.command = 0;
+      this.pendingInterrupt = true;
+    }
+    hasPendingInterrupt() {
+      if (this.pendingInterrupt) {
+        this.pendingInterrupt = false;
+        return true;
+      }
+      return false;
+    }
+  };
+
+  // ============================================================
+  // NEXA COMPILER PIPELINE
+  // ============================================================
+
+  // --- Lexer ---
+
+// === Worker handler ===
+var cpu, memory, display, keyboard, system, timer, uart, disk;
+var wRunning = false;
+var wSpeed = 50000;
+var bpSet = new Set();
+var snapTimer = null;
+var uartBuf = '';
+
+function initEmu() {
+  memory = new Memory();
+  cpu = new CPU(memory);
+  display = new DisplayController();
+  keyboard = new Keyboard();
+  system = new SystemControl();
+  timer = new Timer();
+  uart = new UART();
+  disk = new DiskController();
+  memory.registerDevice(65280, keyboard);
+  memory.registerDevice(65296, timer);
+  memory.registerDevice(65312, uart);
+  memory.registerDevice(65328, display);
+  memory.registerDevice(65360, disk);
+  memory.registerDevice(65520, system);
+  display.setModeChangeCallback(function(mode) {
+    self.postMessage({t:'dm', mode:mode});
+  });
+  disk.setDMA(
+    function(addr) { return memory.read(addr); },
+    function(addr, val) { memory.write(addr, val); }
+  );
+  uart.setOutputCallback(function(ch) { uartBuf += String.fromCharCode(ch & 255); });
+}
+
+function resetDev() {
+  display.write(0,0); display.write(1,0);
+  system.pending = 0; system.mask = 0;
+  timer.control = 0; timer.interval = 0; timer.counter = 0; timer.pendingInterrupt = false;
+  keyboard.status = 0; keyboard.data = 0; keyboard.pendingInterrupt = false;
+  uart.txStatus = 1; uart.rxStatus = 0; uart.rxData = 0;
+  uart.pendingRxInterrupt = false; uart.pendingTxInterrupt = false;
+  disk.command = 0; disk.sector = 0; disk.memAddr = 0; disk.status = 0; disk.pendingInterrupt = false;
+}
+
+function svcBatch(cycles) {
+  if (cycles > 0 && timer.enabled && timer.interval !== 0) {
+    var total = timer.counter + cycles;
+    if (total >= timer.interval) system.setInterrupt(0);
+    timer.counter = total % timer.interval;
+  }
+  if (keyboard.hasPendingInterrupt()) system.setInterrupt(1);
+  if (uart.hasPendingRxInterrupt()) system.setInterrupt(2);
+  if (uart.hasPendingTxInterrupt()) system.setInterrupt(3);
+  if (disk.hasPendingInterrupt && disk.hasPendingInterrupt()) system.setInterrupt(4);
+}
+
+function svcCycle() {
+  if (timer.tick()) system.setInterrupt(0);
+  if (keyboard.hasPendingInterrupt()) system.setInterrupt(1);
+  if (uart.hasPendingRxInterrupt()) system.setInterrupt(2);
+  if (uart.hasPendingTxInterrupt()) system.setInterrupt(3);
+  if (disk.hasPendingInterrupt && disk.hasPendingInterrupt()) system.setInterrupt(4);
+}
+
+function sendSnap() {
+  var fb = new Uint16Array(4800);
+  fb.set(memory.ram.subarray(0xEC00, 0xEC00 + 4800));
+  self.postMessage({
+    t: 'snap',
+    s: {
+      A: cpu.A & 65535, D: cpu.D & 65535, B: cpu.B & 65535, SP: cpu.SP & 65535,
+      PC: cpu.PC & 65535, STATUS: cpu.STATUS & 65535, EPC: cpu.EPC & 65535,
+      CAUSE: cpu.CAUSE & 65535, BASE: cpu.BASE & 65535, LIMIT: cpu.LIMIT & 65535,
+      KSP: cpu.KSP & 65535, flagN: cpu.flagN, flagZ: cpu.flagZ,
+      ie: cpu.ie, mode: cpu.mode, cyc: cpu.cycleCount,
+      halted: cpu.halted, df: cpu.doubleFault
+    },
+    fb: fb.buffer,
+    dm: display.getMode(),
+    u: uartBuf,
+    r: wRunning,
+    ks: keyboard.status,
+    us: uart.rxStatus
+  }, [fb.buffer]);
+  uartBuf = '';
+}
+
+function runLoop() {
+  if (!wRunning || cpu.halted) {
+    wRunning = false;
+    sendSnap();
+    self.postMessage({t: 'stop', reason: cpu.halted ? 'halted' : 'paused'});
+    return;
+  }
+  var t0 = performance.now();
+  var executed = 0;
+  var hasBP = bpSet.size > 0;
+
+  if (hasBP) {
+    while (executed < wSpeed && !cpu.halted && wRunning) {
+      if (bpSet.has(cpu.PC)) {
+        wRunning = false;
+        sendSnap();
+        self.postMessage({t: 'stop', reason: 'bp', pc: cpu.PC});
+        return;
+      }
+      if (!cpu.activeMode && !(cpu.STATUS & 4)) {
+        var chunk = Math.min(wSpeed - executed, 4096);
+        var ran = cpu.runFast(chunk);
+        if (ran <= 0) break;
+        svcBatch(ran);
+        executed += ran;
+      } else {
+        cpu.step();
+        svcCycle();
+        executed++;
+      }
+      if (bpSet.has(cpu.PC)) {
+        wRunning = false;
+        sendSnap();
+        self.postMessage({t: 'stop', reason: 'bp', pc: cpu.PC});
+        return;
+      }
+      if (performance.now() - t0 > 12) break;
+    }
+  } else {
+    while (executed < wSpeed && !cpu.halted && wRunning) {
+      if (!cpu.activeMode && !(cpu.STATUS & 4)) {
+        var chunk2 = Math.min(wSpeed - executed, 200000);
+        var ran2 = cpu.runFast(chunk2);
+        if (ran2 <= 0) { cpu.step(); svcCycle(); executed++; continue; }
+        svcBatch(ran2);
+        executed += ran2;
+      } else {
+        cpu.step();
+        svcCycle();
+        executed++;
+      }
+      if (performance.now() - t0 > 12) break;
+    }
+  }
+
+  if (cpu.halted) {
+    wRunning = false;
+    sendSnap();
+    self.postMessage({t: 'stop', reason: 'halted'});
+    return;
+  }
+  if (wRunning) setTimeout(runLoop, 0);
+}
+
+function startSnaps() { if (!snapTimer) snapTimer = setInterval(sendSnap, 33); }
+function stopSnaps() { if (snapTimer) { clearInterval(snapTimer); snapTimer = null; } }
+
+initEmu();
+
+self.onmessage = function(e) {
+  var msg = e.data;
+  switch (msg.t) {
+    case 'load': {
+      wRunning = false; stopSnaps();
+      memory.clear(); resetDev(); cpu.reset(); uartBuf = '';
+      memory.loadProgram(new Uint16Array(msg.code));
+      sendSnap();
+      break;
+    }
+    case 'run':
+      if (msg.speed) wSpeed = msg.speed;
+      wRunning = true; startSnaps(); runLoop();
+      break;
+    case 'pause':
+      wRunning = false; stopSnaps(); sendSnap();
+      break;
+    case 'step': {
+      var count = msg.n || 1;
+      for (var i = 0; i < count; i++) {
+        if (cpu.halted) break;
+        if (bpSet.has(cpu.PC) && i > 0) break;
+        cpu.step(); svcCycle();
+      }
+      sendSnap();
+      break;
+    }
+    case 'reset':
+      wRunning = false; stopSnaps();
+      memory.clear(); resetDev(); cpu.reset(); uartBuf = '';
+      if (msg.code) memory.loadProgram(new Uint16Array(msg.code));
+      sendSnap();
+      break;
+    case 'bp':
+      bpSet = new Set(msg.a);
+      break;
+    case 'spd':
+      wSpeed = msg.v || 50000;
+      break;
+    case 'key':
+      if (keyboard.status === 0) keyboard.keyDown(msg.a);
+      break;
+    case 'mem': {
+      var start = msg.start & 65535;
+      var len = msg.len || 128;
+      var data = new Uint16Array(len);
+      for (var j = 0; j < len; j++) data[j] = memory.read((start + j) & 65535);
+      self.postMessage({t: 'memp', start: start, len: len, data: data.buffer, rid: msg.rid}, [data.buffer]);
+      break;
+    }
+  }
+};
+sendSnap();
+
+
+</script>
+<script>
+// Class field helpers (used by SoundGenerator and potentially other classes)
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+</script>
+<script>
+// Graphics constants: palette and 8x8 font data
+var PALETTE = [
+  "#000000",
+  "#0000AA",
+  "#00AA00",
+  "#00AAAA",
+  "#AA0000",
+  "#AA00AA",
+  "#AA5500",
+  "#AAAAAA",
+  "#555555",
+  "#5555FF",
+  "#55FF55",
+  "#55FFFF",
+  "#FF5555",
+  "#FF55FF",
+  "#FFFF55",
+  "#FFFFFF"
+];
+var FONT_8X8 = createBasicFont();
+function createBasicFont() {
+  const font = new Uint8Array(128 * 8);
+  const glyphs = {
+    33: [24, 24, 24, 24, 24, 0, 24, 0],
+    40: [12, 24, 48, 48, 48, 24, 12, 0],
+    41: [48, 24, 12, 12, 12, 24, 48, 0],
+    43: [0, 24, 24, 126, 24, 24, 0, 0],
+    44: [0, 0, 0, 0, 0, 24, 24, 48],
+    45: [0, 0, 0, 126, 0, 0, 0, 0],
+    46: [0, 0, 0, 0, 0, 24, 24, 0],
+    48: [60, 102, 110, 118, 102, 102, 60, 0],
+    49: [24, 56, 24, 24, 24, 24, 126, 0],
+    50: [60, 102, 6, 12, 24, 48, 126, 0],
+    51: [60, 102, 6, 28, 6, 102, 60, 0],
+    52: [12, 28, 60, 108, 126, 12, 12, 0],
+    53: [126, 96, 124, 6, 6, 102, 60, 0],
+    54: [28, 48, 96, 124, 102, 102, 60, 0],
+    55: [126, 6, 12, 24, 48, 48, 48, 0],
+    56: [60, 102, 102, 60, 102, 102, 60, 0],
+    57: [60, 102, 102, 62, 6, 12, 56, 0],
+    58: [0, 24, 24, 0, 24, 24, 0, 0],
+    61: [0, 0, 126, 0, 126, 0, 0, 0],
+    65: [24, 60, 102, 102, 126, 102, 102, 0],
+    // A
+    66: [124, 102, 102, 124, 102, 102, 124, 0],
+    // B
+    67: [60, 102, 96, 96, 96, 102, 60, 0],
+    // C
+    68: [120, 108, 102, 102, 102, 108, 120, 0],
+    // D
+    69: [126, 96, 96, 124, 96, 96, 126, 0],
+    // E
+    70: [126, 96, 96, 124, 96, 96, 96, 0],
+    // F
+    71: [60, 102, 96, 110, 102, 102, 62, 0],
+    // G
+    72: [102, 102, 102, 126, 102, 102, 102, 0],
+    // H
+    73: [60, 24, 24, 24, 24, 24, 60, 0],
+    // I
+    74: [6, 6, 6, 6, 6, 102, 60, 0],
+    // J
+    75: [102, 108, 120, 112, 120, 108, 102, 0],
+    // K
+    76: [96, 96, 96, 96, 96, 96, 126, 0],
+    // L
+    77: [198, 238, 254, 214, 198, 198, 198, 0],
+    // M
+    78: [102, 118, 126, 126, 110, 102, 102, 0],
+    // N
+    79: [60, 102, 102, 102, 102, 102, 60, 0],
+    // O
+    80: [124, 102, 102, 124, 96, 96, 96, 0],
+    // P
+    81: [60, 102, 102, 102, 106, 108, 54, 0],
+    // Q
+    82: [124, 102, 102, 124, 108, 102, 102, 0],
+    // R
+    83: [60, 102, 96, 60, 6, 102, 60, 0],
+    // S
+    84: [126, 24, 24, 24, 24, 24, 24, 0],
+    // T
+    85: [102, 102, 102, 102, 102, 102, 60, 0],
+    // U
+    86: [102, 102, 102, 102, 102, 60, 24, 0],
+    // V
+    87: [198, 198, 198, 214, 254, 238, 198, 0],
+    // W
+    88: [102, 102, 60, 24, 60, 102, 102, 0],
+    // X
+    89: [102, 102, 102, 60, 24, 24, 24, 0],
+    // Y
+    90: [126, 6, 12, 24, 48, 96, 126, 0],
+    // Z
+    97: [0, 0, 60, 6, 62, 102, 62, 0],
+    // a
+    98: [96, 96, 124, 102, 102, 102, 124, 0],
+    // b
+    99: [0, 0, 60, 96, 96, 96, 60, 0],
+    // c
+    100: [6, 6, 62, 102, 102, 102, 62, 0],
+    // d
+    101: [0, 0, 60, 102, 126, 96, 60, 0],
+    // e
+    102: [28, 48, 124, 48, 48, 48, 48, 0],
+    // f
+    103: [0, 0, 62, 102, 102, 62, 6, 60],
+    // g
+    104: [96, 96, 124, 102, 102, 102, 102, 0],
+    // h
+    105: [24, 0, 56, 24, 24, 24, 60, 0],
+    // i
+    107: [96, 96, 102, 108, 120, 108, 102, 0],
+    // k
+    108: [56, 24, 24, 24, 24, 24, 60, 0],
+    // l
+    109: [0, 0, 236, 254, 214, 198, 198, 0],
+    // m
+    110: [0, 0, 124, 102, 102, 102, 102, 0],
+    // n
+    111: [0, 0, 60, 102, 102, 102, 60, 0],
+    // o
+    112: [0, 0, 124, 102, 102, 124, 96, 96],
+    // p
+    114: [0, 0, 124, 102, 96, 96, 96, 0],
+    // r
+    115: [0, 0, 62, 96, 60, 6, 124, 0],
+    // s
+    116: [48, 48, 124, 48, 48, 48, 28, 0],
+    // t
+    117: [0, 0, 102, 102, 102, 102, 62, 0],
+    // u
+    118: [0, 0, 102, 102, 102, 60, 24, 0],
+    // v
+    119: [0, 0, 198, 198, 214, 254, 108, 0],
+    // w
+    120: [0, 0, 102, 60, 24, 60, 102, 0],
+    // x
+    121: [0, 0, 102, 102, 102, 62, 6, 60],
+    // y
+    122: [0, 0, 126, 12, 24, 48, 126, 0]
+    // z
+  };
+  for (const [code, rows] of Object.entries(glyphs)) {
+    const base = parseInt(code) * 8;
+    for (let r = 0; r < 8; r++) {
+      font[base + r] = rows[r];
+    }
+  }
+  return font;
+}
+
+</script>
+<script>
+// Nexa ASM
+var REGISTERS = { "A": 0, "D": 1, "B": 2, "SP": 3 };
+var CONTROL_REGISTERS = {
+  "STATUS": 0,
+  "EPC": 1,
+  "CAUSE": 2,
+  "BASE": 3,
+  "LIMIT": 4,
+  "KSP": 5
+};
+var OPCODES = {
+  "LDI": 0,
+  "LDU": 1,
+  "ADD": 2,
+  "SUB": 3,
+  "AND": 4,
+  "OR": 5,
+  "ALU2": 6,
+  "LOAD": 7,
+  "STORE": 8,
+  "BR": 9,
+  "JMP": 10,
+  "CALL": 11,
+  "STACK": 12,
+  "TRAP": 13,
+  "SYS": 14,
+  "RET": 15
+};
+var ALU2_SUB_OPS = {
+  "NOT": 0,
+  "SHL": 1,
+  "ASR": 2,
+  "MOV": 3,
+  "XOR": 4
+};
+var SYS_SUB_OPS = {
+  "IRET": 0,
+  "RDCTL": 1,
+  "WRCTL": 2,
+  "HALT": 3
+};
+var BR_CONDITIONS = {
+  "BRN": 4,
+  "BRZ": 2,
+  "BRP": 1,
+  "BRNZ": 6,
+  "BRNP": 5,
+  "BRZP": 3,
+  "BRA": 7,
+  "BRNZP": 7
+};
+var Assembler = class {
+  constructor() {
+    __publicField(this, "symbols", {});
+    __publicField(this, "errors", []);
+    __publicField(this, "output", []);
+    __publicField(this, "sourceMap", {});
+    __publicField(this, "currentAddress", 0);
+    __publicField(this, "lines", []);
+    __publicField(this, "pass", 0);
+  }
+  assemble(source) {
+    this.symbols = {};
+    this.errors = [];
+    this.output = [];
+    this.sourceMap = {};
+    this.currentAddress = 0;
+    this.lines = source.split("\n").map((line, idx) => {
+      let cleaned = line.replace(/\r$/, "");
+      // Only strip comments if not a .STRING directive
+      if (!/^\s*([\w.$]+:\s*)?\.string\s+"/i.test(cleaned)) {
+        cleaned = cleaned.replace(/;.*/, "").replace(/\/\/.*/, "");
+      } else {
+        // For .STRING lines, only strip comments AFTER the closing quote
+        const strDirectiveMatch = cleaned.match(/^(.*\.string\s+"[^"]*")(.*)/i);
+        if (strDirectiveMatch) {
+          cleaned = strDirectiveMatch[1] + strDirectiveMatch[2].replace(/;.*/, "").replace(/\/\/.*/, "");
+        }
+      }
+      return { num: idx + 1, raw: line, text: cleaned.trim() };
+    });
+    this.pass = 1;
+    this.runPass();
+    this.pass = 2;
+    this.currentAddress = 0;
+    this.output = [];
+    this.runPass();
+    let maxAddr = this.output.length - 1;
+    for (const k of Object.keys(this.sourceMap)) {
+      const n = Number(k);
+      if (n > maxAddr) maxAddr = n;
+    }
+    if (maxAddr < 0) maxAddr = 0;
+    const code = new Uint16Array(maxAddr + 1);
+    for (const [addr, word] of Object.entries(this.output)) {
+      code[Number(addr)] = word;
+    }
+    return {
+      success: this.errors.length === 0,
+      code,
+      errors: [...this.errors],
+      sourceMap: { ...this.sourceMap },
+      symbols: { ...this.symbols }
+    };
+  }
+  // ============================================================
+  // Internal: Run a single pass
+  // ============================================================
+  runPass() {
+    this.currentAddress = 0;
+    for (const line of this.lines) {
+      if (line.text === "") continue;
+      let text = line.text;
+      const labelMatch = text.match(/^([\w.$]+):\s*(.*)/);
+      if (labelMatch) {
+        const label = labelMatch[1];
+        if (this.pass === 1) {
+          if (Object.prototype.hasOwnProperty.call(this.symbols, label)) {
+            this.addError(line.num, `Duplikat label: '${label}'`);
+          } else {
+            this.symbols[label] = this.currentAddress;
+          }
+        }
+        text = labelMatch[2].trim();
+        if (text === "") continue;
+      }
+      this.parseLine(text, line.num, line.raw);
+    }
+  }
+  // ============================================================
+  // Line parser
+  // ============================================================
+  parseLine(text, lineNum, rawSource) {
+    const parts = this.tokenize(text);
+    if (parts.length === 0) return;
+    const mnemonic = parts[0].toUpperCase();
+    if (mnemonic === ".ORG") {
+      const addr = this.parseImmediate(parts[1], lineNum);
+      if (addr !== null) this.currentAddress = addr & 65535;
+      return;
+    }
+    if (mnemonic === ".WORD") {
+      for (let i = 1; i < parts.length; i++) {
+        if (this.pass === 2) {
+          const val = this.parseImmediate(parts[i], lineNum);
+          this.emit(val !== null ? val & 65535 : 0, lineNum, rawSource);
+        } else {
+          this.currentAddress++;
+        }
+      }
+      return;
+    }
+    if (mnemonic === ".STRING") {
+      const strMatch = text.match(/\.string\s+"([^"]*)"/i);
+      if (!strMatch) {
+        this.addError(lineNum, `Ugyldig .string-direktiv`);
+        return;
+      }
+      const raw = strMatch[1];
+      let str = "";
+      for (let i = 0; i < raw.length; i++) {
+        if (raw[i] === "\\" && i + 1 < raw.length) {
+          switch (raw[i + 1]) {
+            case "n":
+              str += "\n";
+              i++;
+              break;
+            case "t":
+              str += "	";
+              i++;
+              break;
+            case "0":
+              str += "\0";
+              i++;
+              break;
+            case "\\":
+              str += "\\";
+              i++;
+              break;
+            default:
+              str += raw[i];
+          }
+        } else {
+          str += raw[i];
+        }
+      }
+      if (this.pass === 2) {
+        for (const ch of str) this.emit(ch.charCodeAt(0), lineNum, rawSource);
+        this.emit(0, lineNum, rawSource);
+      } else {
+        this.currentAddress += str.length + 1;
+      }
+      return;
+    }
+    if (mnemonic === ".EQU") {
+      if (parts.length < 3) {
+        this.addError(lineNum, `.equ krever NAVN og verdi`);
+        return;
+      }
+      const val = this.parseImmediate(parts[2], lineNum);
+      if (this.pass === 1 && val !== null) {
+        if (Object.prototype.hasOwnProperty.call(this.symbols, parts[1])) {
+          this.addError(lineNum, `Duplikat symbol i .equ: '${parts[1]}'`);
+        } else {
+          this.symbols[parts[1]] = val & 65535;
+        }
+      }
+      return;
+    }
+    if (this.tryPseudo(mnemonic, parts, lineNum, rawSource)) return;
+    this.assembleInstruction(mnemonic, parts, lineNum, rawSource);
+  }
+  // ============================================================
+  // Pseudo-instructions
+  // ============================================================
+  tryPseudo(mnemonic, parts, lineNum, rawSource) {
+    switch (mnemonic) {
+      case "NOP":
+        this.emitWord(this.encodeBR(0, 0), lineNum, rawSource);
+        return true;
+      case "LDA": {
+        const reg = this.parseReg(parts[1], lineNum);
+        const val = this.parseImmediate(parts[2], lineNum);
+        if (reg === null || val === null) {
+          if (this.pass === 2) {
+            this.emitWord(0, lineNum, rawSource);
+            this.emitWord(0, lineNum, rawSource);
+          } else {
+            this.currentAddress += 2;
+          }
+          return true;
+        }
+        const val16 = val & 65535;
+        this.emitWord(this.encodeLDI(reg, val16 & 1023), lineNum, rawSource);
+        this.emitWord(this.encodeLDU(reg, val16 >> 10 & 63), lineNum, rawSource);
+        return true;
+      }
+      case "CMP": {
+        const r1 = this.parseReg(parts[1], lineNum);
+        const r2 = this.parseReg(parts[2], lineNum);
+        if (this.pass === 2 && r1 !== null && r2 !== null) {
+          this.emitWord(this.encodeStack(0, REGISTERS["A"]), lineNum, rawSource);
+          this.emitWord(this.encodeALU2("MOV", REGISTERS["A"], r1), lineNum, rawSource);
+          this.emitWord(this.encodeR(OPCODES["SUB"], REGISTERS["A"], r2), lineNum, rawSource);
+          this.emitWord(this.encodeStack(1, REGISTERS["A"]), lineNum, rawSource);
+        } else {
+          this.currentAddress += 4;
+        }
+        return true;
+      }
+      case "CLR": {
+        const reg = this.parseReg(parts[1], lineNum);
+        this.emitWord(reg !== null ? this.encodeLDI(reg, 0) : 0, lineNum, rawSource);
+        return true;
+      }
+      case "INC": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (this.pass === 2 && reg !== null) {
+          this.emitWord(this.encodeStack(0, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeLDI(REGISTERS["B"], 1), lineNum, rawSource);
+          this.emitWord(this.encodeR(OPCODES["ADD"], reg, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeStack(1, REGISTERS["B"]), lineNum, rawSource);
+        } else {
+          this.currentAddress += 4;
+        }
+        return true;
+      }
+      case "DEC": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (this.pass === 2 && reg !== null) {
+          this.emitWord(this.encodeStack(0, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeLDI(REGISTERS["B"], 1), lineNum, rawSource);
+          this.emitWord(this.encodeR(OPCODES["SUB"], reg, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeStack(1, REGISTERS["B"]), lineNum, rawSource);
+        } else {
+          this.currentAddress += 4;
+        }
+        return true;
+      }
+      case "NEG": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (this.pass === 2 && reg !== null) {
+          this.emitWord(this.encodeALU2("NOT", reg, 0), lineNum, rawSource);
+          this.emitWord(this.encodeStack(0, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeLDI(REGISTERS["B"], 1), lineNum, rawSource);
+          this.emitWord(this.encodeR(OPCODES["ADD"], reg, REGISTERS["B"]), lineNum, rawSource);
+          this.emitWord(this.encodeStack(1, REGISTERS["B"]), lineNum, rawSource);
+        } else {
+          this.currentAddress += 5;
+        }
+        return true;
+      }
+      case "BRA": {
+        const offset = this.parseOffset(parts[1], lineNum, 9);
+        if (this.pass === 2) {
+          this.emitWord(this.encodeBR(7, offset ?? 0), lineNum, rawSource);
+        } else {
+          this.currentAddress++;
+        }
+        return true;
+      }
+      case "TST": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (this.pass === 2 && reg !== null) {
+          this.emitWord(this.encodeStack(0, REGISTERS["A"]), lineNum, rawSource);
+          this.emitWord(this.encodeALU2("MOV", REGISTERS["A"], reg), lineNum, rawSource);
+          this.emitWord(this.encodeStack(1, REGISTERS["A"]), lineNum, rawSource);
+        } else {
+          this.currentAddress += 3;
+        }
+        return true;
+      }
+      default:
+        if (mnemonic in BR_CONDITIONS) {
+          const offset = this.parseOffset(parts[1], lineNum, 9);
+          if (this.pass === 2) {
+            this.emitWord(this.encodeBR(BR_CONDITIONS[mnemonic], offset ?? 0), lineNum, rawSource);
+          } else {
+            this.currentAddress++;
+          }
+          return true;
+        }
+        return false;
+    }
+  }
+  // ============================================================
+  // Real instruction assembly
+  // ============================================================
+  assembleInstruction(mnemonic, parts, lineNum, rawSource) {
+    let word = 0;
+    switch (mnemonic) {
+      case "LDI": {
+        const reg = this.parseReg(parts[1], lineNum);
+        const imm = this.parseImmediate(parts[2], lineNum);
+        if (reg !== null && imm !== null) {
+          this.checkRange(imm, -512, 511, lineNum, "LDI imm10");
+          word = this.encodeLDI(reg, imm & 1023);
+        }
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "LDU": {
+        const reg = this.parseReg(parts[1], lineNum);
+        const imm = this.parseImmediate(parts[2], lineNum);
+        if (reg !== null && imm !== null) {
+          this.checkRange(imm, 0, 63, lineNum, "LDU imm6");
+          word = this.encodeLDU(reg, imm & 63);
+        }
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "ADD":
+      case "SUB":
+      case "AND":
+      case "OR": {
+        const dst = this.parseReg(parts[1], lineNum);
+        const src = this.parseReg(parts[2], lineNum);
+        if (dst !== null && src !== null) word = this.encodeR(OPCODES[mnemonic], dst, src);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "NOT":
+      case "SHL":
+      case "ASR": {
+        const dst = this.parseReg(parts[1], lineNum);
+        if (dst !== null) word = this.encodeALU2(mnemonic, dst, 0);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "MOV":
+      case "XOR": {
+        const dst = this.parseReg(parts[1], lineNum);
+        const src = this.parseReg(parts[2], lineNum);
+        if (dst !== null && src !== null) word = this.encodeALU2(mnemonic, dst, src);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "LOAD": {
+        const dst = this.parseReg(parts[1], lineNum);
+        const off = this.parseMemoryOperand(parts.slice(2).join(" "), lineNum);
+        if (dst !== null && off !== null) {
+          this.checkRange(off, -128, 127, lineNum, "LOAD offset8");
+          word = OPCODES["LOAD"] << 12 | dst << 10 | off & 255;
+        }
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "STORE": {
+        const src = this.parseReg(parts[1], lineNum);
+        const off = this.parseMemoryOperand(parts.slice(2).join(" "), lineNum);
+        if (src !== null && off !== null) {
+          this.checkRange(off, -128, 127, lineNum, "STORE offset8");
+          word = OPCODES["STORE"] << 12 | src << 10 | off & 255;
+        }
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "BR": {
+        const cond = this.parseBRCondBits(parts[1], lineNum);
+        const off = this.parseOffset(parts[2], lineNum, 9);
+        if (cond !== null && off !== null) word = this.encodeBR(cond, off);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "JMP": {
+        this.emitWord(OPCODES["JMP"] << 12, lineNum, rawSource);
+        break;
+      }
+      case "CALL": {
+        this.emitWord(OPCODES["CALL"] << 12, lineNum, rawSource);
+        break;
+      }
+      case "RET": {
+        this.emitWord(OPCODES["RET"] << 12, lineNum, rawSource);
+        break;
+      }
+      case "PUSH": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (reg !== null) word = this.encodeStack(0, reg);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "POP": {
+        const reg = this.parseReg(parts[1], lineNum);
+        if (reg !== null) word = this.encodeStack(1, reg);
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "TRAP": {
+        const imm = this.parseImmediate(parts[1], lineNum);
+        if (imm !== null) {
+          this.checkRange(imm, 0, 4095, lineNum, "TRAP imm12");
+          word = OPCODES["TRAP"] << 12 | imm & 4095;
+        }
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "IRET": {
+        this.emitWord(OPCODES["SYS"] << 12 | SYS_SUB_OPS["IRET"] << 8, lineNum, rawSource);
+        break;
+      }
+      case "HALT": {
+        this.emitWord(OPCODES["SYS"] << 12 | SYS_SUB_OPS["HALT"] << 8, lineNum, rawSource);
+        break;
+      }
+      case "RDCTL": {
+        const dst = this.parseReg(parts[1], lineNum);
+        const cr = this.parseCtrlReg(parts[2], lineNum);
+        if (dst !== null && cr !== null) word = OPCODES["SYS"] << 12 | SYS_SUB_OPS["RDCTL"] << 8 | dst << 6 | cr << 3;
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      case "WRCTL": {
+        const cr = this.parseCtrlReg(parts[1], lineNum);
+        const src = this.parseReg(parts[2], lineNum);
+        if (cr !== null && src !== null) word = OPCODES["SYS"] << 12 | SYS_SUB_OPS["WRCTL"] << 8 | src << 6 | cr << 3;
+        this.emitWord(word, lineNum, rawSource);
+        break;
+      }
+      default:
+        this.addError(lineNum, `Ukjent instruksjon: '${mnemonic}'`);
+    }
+  }
+  // ============================================================
+  // Encoding helpers
+  // ============================================================
+  encodeLDI(reg, imm10) {
+    return OPCODES["LDI"] << 12 | reg << 10 | imm10 & 1023;
+  }
+  encodeLDU(reg, imm6) {
+    return OPCODES["LDU"] << 12 | reg << 10 | imm6 & 63;
+  }
+  encodeR(opcode, dst, src) {
+    return opcode << 12 | dst << 10 | src << 8;
+  }
+  encodeALU2(op, dst, src) {
+    return OPCODES["ALU2"] << 12 | dst << 10 | ALU2_SUB_OPS[op] << 7 | src << 5;
+  }
+  encodeBR(nzp, offset9) {
+    return OPCODES["BR"] << 12 | (nzp & 7) << 9 | offset9 & 511;
+  }
+  encodeStack(dir, reg) {
+    return OPCODES["STACK"] << 12 | dir << 11 | reg << 9;
+  }
+  // ============================================================
+  // Parsing helpers
+  // ============================================================
+  tokenize(text) {
+    return text.split(/[,\s]+/).filter((t) => t.length > 0);
+  }
+  parseReg(token, lineNum) {
+    if (!token) {
+      if (this.pass === 2) this.addError(lineNum, "Mangler register");
+      return null;
+    }
+    const upper = token.toUpperCase();
+    if (upper in REGISTERS) return REGISTERS[upper];
+    if (this.pass === 2) this.addError(lineNum, `Ukjent register: '${token}'`);
+    return null;
+  }
+  parseCtrlReg(token, lineNum) {
+    if (!token) {
+      if (this.pass === 2) this.addError(lineNum, "Mangler kontrollregister");
+      return null;
+    }
+    const upper = token.toUpperCase();
+    if (upper in CONTROL_REGISTERS) return CONTROL_REGISTERS[upper];
+    if (this.pass === 2) this.addError(lineNum, `Ukjent kontrollregister: '${token}'`);
+    return null;
+  }
+  parseImmediate(token, lineNum) {
+    if (!token) {
+      if (this.pass === 2) this.addError(lineNum, "Mangler umiddelbar verdi");
+      return null;
+    }
+    const val = this.parseNumber(token);
+    if (val !== null) return val;
+    const sym = token.replace(/,/g, "");
+    if (sym in this.symbols) return this.symbols[sym];
+    if (this.pass === 2) this.addError(lineNum, `Ukjent symbol eller ugyldig verdi: '${token}'`);
+    return null;
+  }
+  parseNumber(token) {
+    const clean = token.replace(/,/g, "");
+    if (/^0x[0-9a-fA-F]+$/i.test(clean)) return parseInt(clean, 16);
+    if (/^0b[01]+$/i.test(clean)) return parseInt(clean.slice(2), 2);
+    if (/^-?\d+$/.test(clean)) return parseInt(clean, 10);
+    return null;
+  }
+  parseMemoryOperand(text, lineNum) {
+    const match = text.match(/\[\s*A\s*([+\-])\s*([\w.$]+)\s*\]/i);
+    if (match) {
+      const sign = match[1] === "-" ? -1 : 1;
+      const val = this.parseImmediate(match[2], lineNum);
+      return val !== null ? sign * val : null;
+    }
+    if (/\[\s*A\s*\]/i.test(text)) return 0;
+    if (this.pass === 2) this.addError(lineNum, `Ugyldig minneoperand: '${text}'`);
+    return null;
+  }
+  parseOffset(token, lineNum, bits) {
+    if (!token) {
+      if (this.pass === 2) this.addError(lineNum, "Mangler offset");
+      return null;
+    }
+    const sym = token.replace(/,/g, "");
+    if (Object.prototype.hasOwnProperty.call(this.symbols, sym)) {
+      const offset = this.symbols[sym] - (this.currentAddress + 1);
+      const max = (1 << bits - 1) - 1;
+      const min = -(1 << bits - 1);
+      if (offset < min || offset > max) {
+        if (this.pass === 2) this.addError(lineNum, `Offset utenfor rekkevidde: ${offset} (${min}..${max})`);
+        return null;
+      }
+      return offset & (1 << bits) - 1;
+    }
+    const val = this.parseNumber(token);
+    if (val !== null) {
+      const max = (1 << bits - 1) - 1;
+      const min = -(1 << bits - 1);
+      if (val < min || val > max) {
+        if (this.pass === 2) this.addError(lineNum, `Numerisk offset ${val} utenfor rekkevidde (${min}..${max})`);
+      }
+      return val & (1 << bits) - 1;
+    }
+    if (this.pass === 2) this.addError(lineNum, `Ukjent offset: '${token}'`);
+    return null;
+  }
+  parseBRCondBits(token, lineNum) {
+    if (!token) {
+      if (this.pass === 2) this.addError(lineNum, "Mangler BR-betingelse");
+      return null;
+    }
+    const val = this.parseNumber(token);
+    if (val !== null && val >= 0 && val <= 7) return val;
+    if (this.pass === 2) this.addError(lineNum, `Ugyldig BR-betingelse: '${token}'`);
+    return null;
+  }
+  // ============================================================
+  // Emit & utility
+  // ============================================================
+  emitWord(word, lineNum, rawSource) {
+    if (this.pass === 2) {
+      this.emit(word & 65535, lineNum, rawSource);
+    } else {
+      this.currentAddress++;
+    }
+  }
+  emit(word, lineNum, rawSource) {
+    this.output[this.currentAddress] = word & 65535;
+    this.sourceMap[this.currentAddress] = { line: lineNum, source: rawSource };
+    this.currentAddress++;
+  }
+  addError(lineNum, msg) {
+    const err = `Linje ${lineNum}: ${msg}`;
+    if (!this.errors.includes(err)) this.errors.push(err);
+  }
+  checkRange(val, min, max, lineNum, desc) {
+    if (val < min || val > max) {
+      this.addError(lineNum, `Verdi ${val} utenfor rekkevidde for ${desc} (${min}..${max})`);
+    }
+  }
+};
+
+</script>
+<script>
+// Nexa Compiler: Lexer, Parser, SymbolTable, CodeGenerator
+// NEXA COMPILER PIPELINE
+// ============================================================
+
+// --- Lexer ---
+var TokenType = { KEYWORD:'KEYWORD', SYMBOL:'SYMBOL', IDENTIFIER:'IDENTIFIER', INT_CONST:'INT_CONST', STRING_CONST:'STRING_CONST', CHAR_CONST:'CHAR_CONST', EOF:'EOF' };
+var JP_KEYWORDS = new Set(['class','struct','enum','const','import','fn','method','new','static','field','var','if','else','while','for','loop','break','continue','return','pub','true','false','null','this','void','int','char','bool','unsafe','syscall']);
+var JP_SYMBOLS = ['<<','>>','<=','>=','!=','==','&&','||','->','{','}','(',')','[',']','.',',',';',':','+','-','*','/','%','&','|','^','~','!','<','>','='];
+
+var Lexer = class {
+  constructor(source) {
+    this.source = source; this.pos = 0; this.line = 1; this.col = 1;
+    this.currentToken = null; this.nextTokenCache = null;
+  }
+  peek() { if (!this.nextTokenCache) this.nextTokenCache = this.readNextToken(); return this.nextTokenCache; }
+  next() { if (this.nextTokenCache) { this.currentToken = this.nextTokenCache; this.nextTokenCache = null; } else { this.currentToken = this.readNextToken(); } return this.currentToken; }
+  eof() { return this.peek().type === TokenType.EOF; }
+  readNextToken() {
+    this.skipWC();
+    if (this.pos >= this.source.length) return this.mkTok(TokenType.EOF, '');
+    const c = this.source[this.pos];
+    if (c === '"') return this.readStr();
+    if (c === "'") return this.readCharLit();
+    if (/[a-zA-Z_]/.test(c)) return this.readIdOrKw();
+    if (/[0-9]/.test(c)) return this.readNum();
+    for (const sym of JP_SYMBOLS) {
+      if (this.source.startsWith(sym, this.pos)) { const t = this.mkTok(TokenType.SYMBOL, sym); this.adv(sym.length); return t; }
+    }
+    throw new Error(`Lexer Error: Unexpected '${c}' at line ${this.line}, col ${this.col}`);
+  }
+  skipWC() {
+    while (this.pos < this.source.length) {
+      const c = this.source[this.pos];
+      if (/\s/.test(c)) { if (c === '\n') { this.line++; this.col = 1; } else this.col++; this.pos++; continue; }
+      if (this.source.startsWith('//', this.pos)) { while (this.pos < this.source.length && this.source[this.pos] !== '\n') this.pos++; continue; }
+      if (this.source.startsWith('/*', this.pos)) { const startLine = this.line; this.pos += 2; this.col += 2; while (this.pos < this.source.length && !this.source.startsWith('*/', this.pos)) { if (this.source[this.pos] === '\n') { this.line++; this.col = 1; } else this.col++; this.pos++; } if (this.pos >= this.source.length) throw new Error(`Unterminated block comment starting at line ${startLine}`); this.pos += 2; this.col += 2; continue; }
+      break;
+    }
+  }
+  readStr() {
+    const sL = this.line, sC = this.col; this.adv(1); let s = '';
+    while (this.pos < this.source.length && this.source[this.pos] !== '"') {
+      if (this.source[this.pos] === '\\') { this.adv(1); const e = this.source[this.pos];
+        switch(e) { case 'n': s+='\n'; break; case 't': s+='\t'; break; case 'r': s+='\r'; break; case '\\': s+='\\'; break; case '"': s+='"'; break; case "'": s+="'"; break; case '0': s+='\0'; break;
+          case 'x': { const h = this.source.substring(this.pos+1, this.pos+3); if (/^[0-9a-fA-F]{2}$/.test(h)) { s+=String.fromCharCode(parseInt(h,16)); this.adv(2); continue; } else s+='x'; break; }
+          default: s+=e; }
+      } else s += this.source[this.pos];
+      this.adv(1);
+    }
+    if (this.pos >= this.source.length) throw new Error(`Unterminated string at line ${sL}`);
+    this.adv(1); return { type: TokenType.STRING_CONST, value: s, line: sL, column: sC };
+  }
+  readCharLit() {
+    const sL = this.line, sC = this.col; this.adv(1); let s = '';
+    if (this.source[this.pos] === '\\') { this.adv(1); const e = this.source[this.pos];
+      switch(e) { case 'n': s='\n'; break; case 't': s='\t'; break; case '\\': s='\\'; break; case "'": s="'"; break; case '0': s='\0'; break;
+        case 'x': { const h = this.source.substring(this.pos+1,this.pos+3); if (/^[0-9a-fA-F]{2}$/.test(h)) { s=String.fromCharCode(parseInt(h,16)); this.adv(3); } else { s='x'; this.adv(1); } break; }
+        default: s=e; this.adv(1); }
+    } else { s = this.source[this.pos]; this.adv(1); }
+    if (this.source[this.pos] !== "'") throw new Error(`Invalid char literal at line ${sL}`);
+    this.adv(1); return { type: TokenType.CHAR_CONST, value: s, line: sL, column: sC };
+  }
+  readIdOrKw() {
+    const sL=this.line, sC=this.col; let id='';
+    while (this.pos < this.source.length && /[a-zA-Z0-9_]/.test(this.source[this.pos])) { id+=this.source[this.pos]; this.adv(1); }
+    return JP_KEYWORDS.has(id) ? { type: TokenType.KEYWORD, value: id, line: sL, column: sC } : { type: TokenType.IDENTIFIER, value: id, line: sL, column: sC };
+  }
+  readNum() {
+    const sL=this.line, sC=this.col; let ns='';
+    if (this.source.startsWith('0x',this.pos)||this.source.startsWith('0X',this.pos)) { ns='0x'; this.adv(2); while(this.pos<this.source.length&&/[0-9a-fA-F]/.test(this.source[this.pos])){ns+=this.source[this.pos];this.adv(1);} if(ns.length<=2) throw new Error(`Invalid hex literal at line ${sL}, col ${sC}: no digits after '0x'`); return {type:TokenType.INT_CONST,value:parseInt(ns,16),line:sL,column:sC}; }
+    if (this.source.startsWith('0b',this.pos)||this.source.startsWith('0B',this.pos)) { this.adv(2); while(this.pos<this.source.length&&/[01]/.test(this.source[this.pos])){ns+=this.source[this.pos];this.adv(1);} if(ns.length===0) throw new Error(`Invalid binary literal at line ${sL}, col ${sC}: no digits after '0b'`); return {type:TokenType.INT_CONST,value:parseInt(ns,2),line:sL,column:sC}; }
+    while(this.pos<this.source.length&&/[0-9]/.test(this.source[this.pos])){ns+=this.source[this.pos];this.adv(1);}
+    return {type:TokenType.INT_CONST,value:parseInt(ns,10),line:sL,column:sC};
+  }
+  mkTok(type,value) { return {type,value,line:this.line,column:this.col}; }
+  adv(n) { for(let i=0;i<n;i++) { if(this.source[this.pos]==='\n'){this.line++;this.col=1;}else this.col++; this.pos++; } }
+};
+
+// --- Parser ---
+var PRECEDENCE = {'||':2,'&&':3,'|':4,'^':5,'&':6,'==':7,'!=':7,'<':8,'>':8,'<=':8,'>=':8,'<<':9,'>>':9,'+':10,'-':10,'*':11,'/':11,'%':11};
+
+var Parser = class {
+  constructor(source) { this.lexer = new Lexer(source); }
+  parse() {
+    const prog = { type:'Program', classes:[], declarations:[] };
+    while (!this.lexer.eof()) { const d = this.parseTLD(); prog.declarations.push(d); if(d.type==='ClassDecl') prog.classes.push(d); }
+    return prog;
+  }
+  parseTLD() {
+    const t = this.pk();
+    if(t.type===TokenType.KEYWORD) {
+      if(t.value==='class') return this.parseClass();
+      if(t.value==='struct') return this.parseStruct();
+      if(t.value==='enum') return this.parseEnum();
+      if(t.value==='fn') return this.parseTLFn();
+      if(t.value==='const') return this.parseTLConst();
+      if(t.value==='import') return this.parseImport();
+      if(t.value==='static') return this.parseTLStatic();
+    }
+    throw this.err(`Expected declaration, got '${t.value}'`);
+  }
+  parseTLFn() {
+    this.ckw('fn'); const name=this.cid(); this.cs('(');
+    const params=[]; if(!this.chk(')')) do { const pn=this.cid(); this.cs(':'); const pt=this.parseType(); params.push({type:'VarDecl',kind:'argument',name:pn,varType:pt}); } while(this.ms(','));
+    this.cs(')'); let rt={type:'TypeRef',name:'void'}; if(this.ms('->')) rt=this.parseType();
+    return {type:'SubroutineDecl',kind:'function',name,returnType:rt,parameters:params,body:this.parseBlock()};
+  }
+  parseTLConst() { this.ckw('const'); const n=this.cid(); this.cs(':'); const vt=this.parseType(); this.cs('='); const init=this.parseExpr(); this.cs(';'); return {type:'VarDecl',kind:'const',name:n,varType:vt,initializer:init}; }
+  parseTLStatic() { this.ckw('static'); const n=this.cid(); this.cs(':'); const vt=this.parseType(); let init; if(this.ms('=')) init=this.parseExpr(); this.cs(';'); return {type:'VarDecl',kind:'static',name:n,varType:vt,initializer:init}; }
+  parseImport() { this.ckw('import'); const n=this.cid(); this.cs(';'); return {type:'ImportDecl',name:n}; }
+  parseClass() {
+    this.ckw('class'); const name=this.cid(); this.cs('{'); const decls=[];
+    while(!this.ms('}')) {
+      const t=this.pk();
+      if(t.type===TokenType.KEYWORD) {
+        if(['static','field','pub'].includes(t.value)) decls.push(this.parseClassVar());
+        else if(['new','method','fn'].includes(t.value)) decls.push(this.parseSub());
+        else if(t.value==='enum') decls.push(this.parseEnum());
+        else if(t.value==='const') decls.push(this.parseClassConst());
+        else throw this.err(`Unexpected '${t.value}' in class`);
+      } else throw this.err(`Expected class member, got '${t.value}'`);
+    }
+    return {type:'ClassDecl',name,declarations:decls};
+  }
+  parseClassConst() { this.ckw('const'); const n=this.cid(); this.cs(':'); const vt=this.parseType(); this.cs('='); const init=this.parseExpr(); this.cs(';'); return {type:'VarDecl',kind:'const',name:n,varType:vt,initializer:init}; }
+  parseClassVar() {
+    let pub=false; if(this.mkw('pub')) pub=true;
+    const kt=this.lexer.next(); if(!['static','field'].includes(kt.value)) throw this.err(`Expected 'static'/'field', got '${kt.value}'`);
+    const n=this.cid(); this.cs(':'); const vt=this.parseType(); let init; if(this.ms('=')) init=this.parseExpr(); this.cs(';');
+    return {type:'VarDecl',kind:kt.value,isPublic:pub,name:n,varType:vt,initializer:init};
+  }
+  parseSub() {
+    const kind=this.lexer.next().value; let sk; if(kind==='new') sk='new'; else if(kind==='method') sk='method'; else sk='function';
+    let name='new'; if(sk!=='new') name=this.cid();
+    this.cs('('); const params=[]; if(!this.chk(')')) do { const pn=this.cid(); this.cs(':'); const pt=this.parseType(); params.push({type:'VarDecl',kind:'argument',name:pn,varType:pt}); } while(this.ms(','));
+    this.cs(')'); let rt={type:'TypeRef',name:'void'}; if(this.ms('->')) rt=this.parseType();
+    return {type:'SubroutineDecl',kind:sk,name,returnType:rt,parameters:params,body:this.parseBlock()};
+  }
+  parseStruct() {
+    this.ckw('struct'); const name=this.cid(); this.cs('{'); const fields=[];
+    while(!this.ms('}')) { const fn=this.cid(); this.cs(':'); const ft=this.parseType(); this.cs(';'); fields.push({type:'VarDecl',kind:'field',name:fn,varType:ft,isPublic:true}); }
+    return {type:'StructDecl',name,fields};
+  }
+  parseEnum() {
+    this.ckw('enum'); const name=this.cid(); this.cs('{'); const vals=[];
+    while(!this.ms('}')) { const vn=this.cid(); let v; if(this.ms('=')) { const nt=this.lexer.next(); v=nt.value; } vals.push({name:vn,value:v}); if(!this.ms(',')) { if(this.pk().value==='}') { this.cs('}'); break; } throw this.err("Expected ',' or '}'"); } }
+    return {type:'EnumDecl',name,values:vals};
+  }
+  parseType() { const t=this.lexer.next(); if(t.type===TokenType.KEYWORD&&['int','char','bool','void'].includes(t.value)) return {type:'TypeRef',name:t.value}; if(t.type===TokenType.IDENTIFIER) return {type:'TypeRef',name:t.value}; throw this.errAt(t,`Expected type, got '${t.value}'`); }
+  parseBlock() { this.cs('{'); const stmts=[]; while(!this.ms('}')) stmts.push(this.parseStmt()); return {type:'Block',statements:stmts}; }
+  parseStmt() {
+    const t=this.pk();
+    if(t.type===TokenType.KEYWORD) { switch(t.value) {
+      case 'var': case 'const': return this.parseLVD();
+      case 'if': return this.parseIf(); case 'while': return this.parseWhile(); case 'for': return this.parseFor();
+      case 'loop': return this.parseLoop(); case 'return': return this.parseReturn();
+      case 'break': this.ckw('break'); this.cs(';'); return {type:'BreakStatement'};
+      case 'continue': this.ckw('continue'); this.cs(';'); return {type:'ContinueStatement'};
+      case 'unsafe': this.ckw('unsafe'); return {type:'UnsafeBlock',body:this.parseBlock()};
+    }}
+    const expr=this.parseExpr(); if(this.ms('=')) { const val=this.parseExpr(); this.cs(';'); return {type:'AssignmentStatement',target:expr,value:val}; }
+    this.cs(';'); return {type:'ExpressionStatement',expr};
+  }
+  parseLVD() { const k=this.lexer.next().value; const n=this.cid(); this.cs(':'); const vt=this.parseType(); let init; if(this.ms('=')) init=this.parseExpr(); this.cs(';'); return {type:'VarDecl',kind:k,name:n,varType:vt,initializer:init}; }
+  parseIf() { this.ckw('if'); this.cs('('); const cond=this.parseExpr(); this.cs(')'); const tb=this.parseBlock(); let eb; if(this.mkw('else')) { if(this.pk().value==='if') eb=this.parseIf(); else eb=this.parseBlock(); } return {type:'IfStatement',condition:cond,thenBlock:tb,elseBlock:eb}; }
+  parseWhile() { this.ckw('while'); this.cs('('); const cond=this.parseExpr(); this.cs(')'); return {type:'WhileStatement',condition:cond,body:this.parseBlock()}; }
+  parseFor() {
+    this.ckw('for'); this.cs('('); let init; if(!this.ms(';')) init=this.parseStmt(); let cond; if(!this.ms(';')) { cond=this.parseExpr(); this.cs(';'); }
+    let upd; if(!this.chk(')')) { const e=this.parseExpr(); if(this.ms('=')) { const v=this.parseExpr(); upd={type:'AssignmentStatement',target:e,value:v}; } else upd={type:'ExpressionStatement',expr:e}; }
+    this.cs(')'); return {type:'ForStatement',init,condition:cond,update:upd,body:this.parseBlock()};
+  }
+  parseLoop() { this.ckw('loop'); return {type:'LoopStatement',body:this.parseBlock()}; }
+  parseReturn() { this.ckw('return'); let val; if(!this.ms(';')) { val=this.parseExpr(); this.cs(';'); } return {type:'ReturnStatement',value:val}; }
+  parseExpr(minP=0) {
+    let left=this.parseUnary();
+    while(true) { const t=this.pk(); if(t.type!==TokenType.SYMBOL) break; const op=t.value; const p=PRECEDENCE[op]; if(p===undefined||p<minP) break;
+      this.lexer.next(); if(op==='=') throw this.err("'=' not allowed as inline expression");
+      left={type:'BinaryExpression',operator:op,left,right:this.parseExpr(p+1)};
+    }
+    return left;
+  }
+  parseUnary() { const t=this.pk(); if(t.type===TokenType.SYMBOL&&['-','~','!'].includes(t.value)) { this.lexer.next(); return {type:'UnaryExpression',operator:t.value,expr:this.parseUnary()}; } return this.parsePrimary(); }
+  parsePrimary() {
+    const t=this.lexer.next();
+    if(t.type===TokenType.INT_CONST) return {type:'IntegerLiteral',value:t.value};
+    if(t.type===TokenType.STRING_CONST) return {type:'StringLiteral',value:t.value};
+    if(t.type===TokenType.CHAR_CONST) return {type:'CharLiteral',value:t.value};
+    if(t.type===TokenType.KEYWORD) {
+      if(t.value==='true') return {type:'BooleanLiteral',value:true};
+      if(t.value==='false') return {type:'BooleanLiteral',value:false};
+      if(t.value==='null') return {type:'NullLiteral'};
+      if(t.value==='this') return this.parsePostfix({type:'ThisExpression'});
+      if(t.value==='syscall') { this.cs('('); const args=this.parseArgList(); this.cs(')'); return {type:'SubroutineCall',name:'syscall',args}; }
+    }
+    if(t.type===TokenType.IDENTIFIER) return this.parsePostfix({type:'VarRef',name:t.value});
+    if(t.type===TokenType.SYMBOL&&t.value==='(') { const e=this.parseExpr(); this.cs(')'); return this.parsePostfix(e); }
+    throw this.errAt(t,`Unexpected '${t.value}' in expression`);
+  }
+  parsePostfix(expr) {
+    while(true) {
+      if(this.ms('(')) { if(expr.type==='VarRef') expr=this.finishCall(undefined,expr.name); else { const args=this.parseArgList(); this.cs(')'); expr={type:'SubroutineCall',caller:expr,name:'call',args}; } }
+      else if(this.ms('.')) { const m=this.cidOrKw(); if(this.ms('(')) expr=this.finishCall(expr,m); else expr={type:'FieldAccess',obj:expr,name:m}; }
+      else if(this.ms('[')) { const idx=this.parseExpr(); this.cs(']'); expr={type:'ArrayAccess',array:expr,index:idx}; }
+      else break;
+    }
+    return expr;
+  }
+  finishCall(caller,name) { const args=this.parseArgList(); this.cs(')'); return {type:'SubroutineCall',caller,name,args}; }
+  parseArgList() { const args=[]; if(!this.chk(')')) do { args.push(this.parseExpr()); } while(this.ms(',')); return args; }
+  pk() { return this.lexer.peek(); }
+  chk(s) { const t=this.pk(); return t.type===TokenType.SYMBOL&&t.value===s; }
+  ms(s) { if(this.chk(s)){this.lexer.next();return true;} return false; }
+  cs(s) { const t=this.lexer.next(); if(t.type!==TokenType.SYMBOL||t.value!==s) throw this.errAt(t,`Expected '${s}', got '${t.value}'`); }
+  mkw(kw) { const t=this.pk(); if(t.type===TokenType.KEYWORD&&t.value===kw){this.lexer.next();return true;} return false; }
+  ckw(kw) { const t=this.lexer.next(); if(t.type!==TokenType.KEYWORD||t.value!==kw) throw this.errAt(t,`Expected '${kw}', got '${t.value}'`); }
+  cid() { const t=this.lexer.next(); if(t.type!==TokenType.IDENTIFIER) throw this.errAt(t,`Expected identifier, got '${t.value}'`); return t.value; }
+  cidOrKw() { const t=this.lexer.next(); if(t.type!==TokenType.IDENTIFIER&&t.type!==TokenType.KEYWORD) throw this.errAt(t,`Expected identifier, got '${t.value}'`); return t.value; }
+  err(msg) { const t=this.pk(); return new Error(`Parse Error at line ${t.line}, col ${t.column}: ${msg}`); }
+  errAt(t,msg) { return new Error(`Parse Error at line ${t.line}, col ${t.column}: ${msg}`); }
+};
+
+// --- SymbolTable ---
+var SymbolTable = class {
+  constructor() { this.classScope=new Map(); this.subroutineScope=new Map(); this.indices={'static':0,'field':0,'argument':0,'var':0}; }
+  startClass() { this.classScope.clear(); this.indices['static']=0; this.indices['field']=0; }
+  startSubroutine() { this.subroutineScope.clear(); this.indices['argument']=0; this.indices['var']=0; }
+  define(name,type,kind) {
+    const scope = (kind==='static'||kind==='field') ? this.classScope : this.subroutineScope;
+    if(scope.has(name)) throw new Error(`Duplicate symbol: '${name}' already defined as ${scope.get(name).kind}`);
+    const e={name,type,kind,index:this.indices[kind]++};
+    scope.set(name,e);
+  }
+  varCount(kind) { return this.indices[kind]; }
+  lookup(name) { if(this.subroutineScope.has(name)) return this.subroutineScope.get(name); if(this.classScope.has(name)) return this.classScope.get(name); return null; }
+};
+
+// --- CodeGenerator ---
+var CodeGenerator = class {
+  constructor() { this.out=[]; this.symbols=new SymbolTable(); this.className=''; this.moduleName=''; this.labelCounts={}; this.loopStack=[]; this.globalConstants=new Map(); this.localConstants=new Map(); this.enumValues=new Map(); this.fieldLayouts=new Map(); this.classFieldCounts=new Map(); this.knownFunctions=new Set(); }
+  generate(program, moduleName='Main') {
+    this.out=[]; this.symbols=new SymbolTable(); this.moduleName=moduleName;
+    this.globalConstants=new Map(); this.localConstants=new Map(); this.enumValues=new Map(); this.fieldLayouts=new Map(); this.classFieldCounts=new Map(); this.knownFunctions=new Set(); this.labelCounts={}; this.loopStack=[];
+    // Pass 1: collect declarations
+    for(const d of program.declarations) {
+      if(d.type==='VarDecl'&&d.kind==='const'&&d.initializer&&d.initializer.type==='IntegerLiteral') this.globalConstants.set(d.name,d.initializer.value);
+      if(d.type==='VarDecl'&&d.kind==='static') { this.symbols.startClass(); this.symbols.define(d.name,d.varType.name,'static'); }
+      if(d.type==='EnumDecl') this.collectEnum(d);
+      if(d.type==='StructDecl') this.collectFL(d.name,d.fields);
+      if(d.type==='SubroutineDecl') this.knownFunctions.add(`${moduleName}.${d.name}`);
+      if(d.type==='ClassDecl') {
+        this.symbols.startClass();
+        const fds=[];
+        for(const m of d.declarations) {
+          if(m.type==='VarDecl'&&(m.kind==='static'||m.kind==='field')) { this.symbols.define(m.name,m.varType.name,m.kind); if(m.kind==='field') fds.push(m); }
+          else if(m.type==='VarDecl'&&m.kind==='const'&&m.initializer&&m.initializer.type==='IntegerLiteral') this.globalConstants.set(`${d.name}.${m.name}`,m.initializer.value);
+          else if(m.type==='EnumDecl') this.collectEnum(m);
+          else if(m.type==='SubroutineDecl') { if(m.kind==='function') this.knownFunctions.add(`${d.name}.${m.name}`); }
+        }
+        this.classFieldCounts.set(d.name, fds.length);
+        this.collectFL(d.name,fds);
+      }
+    }
+    // Pass 2: compile
+    for(const d of program.declarations) {
+      if(d.type==='ClassDecl') {
+        this.className=d.name;
+        // Re-register class-level symbols for this class
+        this.symbols.startClass();
+        for(const m of d.declarations) {
+          if(m.type==='VarDecl'&&(m.kind==='static'||m.kind==='field')) this.symbols.define(m.name,m.varType.name,m.kind);
+        }
+        for(const m of d.declarations) { if(m.type==='SubroutineDecl') this.compileSub(m); }
+      }
+      else if(d.type==='SubroutineDecl') { this.className=this.moduleName; this.symbols.startClass(); this.compileSub(d); }
+      else if(d.type==='StructDecl') this.compileStructHelpers(d);
+    }
+    return this.out.join('\n')+'\n';
+  }
+  em(c) { this.out.push(c); }
+  gl(prefix) { const c=this.labelCounts[prefix]||0; this.labelCounts[prefix]=c+1; return `${prefix}_${c}`; }
+  getConstant(name) {
+    if(this.localConstants.has(name)) return this.localConstants.get(name);
+    // Check class-qualified constant
+    const qn = `${this.className}.${name}`;
+    if(this.globalConstants.has(qn)) return this.globalConstants.get(qn);
+    if(this.globalConstants.has(name)) return this.globalConstants.get(name);
+    return undefined;
+  }
+  compileStructHelpers(node) {
+    const fc=node.fields.length;
+    this.em(`function ${node.name}.new 0`); this.em(`push constant ${fc}`); this.em('call Memory.alloc 1'); this.em('pop pointer 0');
+    for(let i=0;i<fc;i++) { this.em(`push argument ${i}`); this.em(`pop this ${i}`); }
+    this.em('push pointer 0'); this.em('return');
+    this.em(`function ${node.name}.dispose 0`); this.em('push argument 0'); this.em('call Memory.deAlloc 1'); this.em('push constant 0'); this.em('return');
+  }
+  compileSub(node) {
+    this.symbols.startSubroutine();
+    this.localConstants = new Map(); // Clear local constants per subroutine
+    if(node.kind==='method') this.symbols.define('this',this.className,'argument');
+    for(const p of node.parameters) this.symbols.define(p.name,p.varType.name,'argument');
+    let lc=0; const countL=(s)=>{
+      if(s.type==='Block') s.statements.forEach(countL);
+      else if(s.type==='VarDecl'&&s.kind==='var') lc++;
+      else if(s.type==='VarDecl'&&s.kind==='const'&&s.initializer&&s.initializer.type==='IntegerLiteral') this.localConstants.set(s.name,s.initializer.value);
+      else if(s.type==='IfStatement'){countL(s.thenBlock);if(s.elseBlock)countL(s.elseBlock);}
+      else if(s.type==='WhileStatement'||s.type==='LoopStatement') countL(s.body);
+      else if(s.type==='ForStatement'){if(s.init)countL(s.init);countL(s.body);}
+      else if(s.type==='UnsafeBlock') countL(s.body);
+    };
+    node.body.statements.forEach(countL);
+    this.em(`function ${this.className}.${node.name} ${lc}`);
+    if(node.kind==='method') { this.em('push argument 0'); this.em('pop pointer 0'); }
+    else if(node.kind==='new') {
+      const fc = this.classFieldCounts.get(this.className) || 0;
+      this.em(`push constant ${fc}`); this.em('call Memory.alloc 1'); this.em('pop pointer 0');
+    }
+    this.compileBlock(node.body);
+    if(node.kind==='new') { this.em('push pointer 0'); this.em('return'); }
+    else if(node.returnType.name==='void') { this.em('push constant 0'); this.em('return'); }
+    else { /* Non-void safety net: emit push 0; return in case control falls through */ this.em('push constant 0'); this.em('return'); }
+  }
+  compileBlock(n) { for(const s of n.statements) this.compileStmt(s); }
+  compileStmt(n) {
+    switch(n.type) {
+      case 'Block': this.compileBlock(n); break;
+      case 'VarDecl':
+        if(n.kind==='const') break;
+        if(n.varType && n.varType.name==='void') throw new Error(`Cannot declare variable '${n.name}' with type 'void'`);
+        if(n.kind==='var') this.symbols.define(n.name,n.varType.name,'var');
+        if(n.initializer) { this.compileExpr(n.initializer); const sym=this.symbols.lookup(n.name); if(!sym) throw new Error(`Var ${n.name} not found`); this.em(`pop ${this.k2s(sym.kind)} ${sym.index}`); } break;
+      case 'AssignmentStatement': this.compileAssign(n); break;
+      case 'ExpressionStatement': this.compileExpr(n.expr); this.em('pop temp 0'); break;
+      case 'IfStatement': this.compileIf(n); break;
+      case 'WhileStatement': { const cl=this.gl('WH_C'), el=this.gl('WH_E'); this.loopStack.push({breakLabel:el,continueLabel:cl}); this.em(`label ${cl}`); this.compileExpr(n.condition); this.em('not'); this.em(`if-goto ${el}`); this.compileBlock(n.body); this.em(`goto ${cl}`); this.em(`label ${el}`); this.loopStack.pop(); break; }
+      case 'ForStatement': { const cl=this.gl('FOR_C'), ul=this.gl('FOR_U'), el=this.gl('FOR_E'); if(n.init) this.compileStmt(n.init); this.em(`label ${cl}`); if(n.condition){this.compileExpr(n.condition);this.em('not');this.em(`if-goto ${el}`);} this.loopStack.push({breakLabel:el,continueLabel:ul}); this.compileBlock(n.body); this.em(`label ${ul}`); if(n.update) this.compileStmt(n.update); this.em(`goto ${cl}`); this.em(`label ${el}`); this.loopStack.pop(); break; }
+      case 'LoopStatement': { const tl=this.gl('LP_T'), el=this.gl('LP_E'); this.loopStack.push({breakLabel:el,continueLabel:tl}); this.em(`label ${tl}`); this.compileBlock(n.body); this.em(`goto ${tl}`); this.em(`label ${el}`); this.loopStack.pop(); break; }
+      case 'ReturnStatement': if(n.value) this.compileExpr(n.value); else this.em('push constant 0'); this.em('return'); break;
+      case 'BreakStatement': if(!this.loopStack.length) throw new Error('Break outside loop'); this.em(`goto ${this.loopStack[this.loopStack.length-1].breakLabel}`); break;
+      case 'ContinueStatement': if(!this.loopStack.length) throw new Error('Continue outside loop'); this.em(`goto ${this.loopStack[this.loopStack.length-1].continueLabel}`); break;
+      case 'UnsafeBlock': this.compileBlock(n.body); break;
+    }
+  }
+  compileAssign(n) {
+    if(n.target.type==='VarRef') { this.compileExpr(n.value); const s=this.symbols.lookup(n.target.name); if(!s) throw new Error(`Var ${n.target.name} not found`); this.em(`pop ${this.k2s(s.kind)} ${s.index}`); }
+    else if(n.target.type==='ArrayAccess') { this.compileExpr(n.target.array); this.compileExpr(n.target.index); this.em('add'); this.compileExpr(n.value); this.em('pop temp 0'); this.em('pop pointer 1'); this.em('push temp 0'); this.em('pop that 0'); }
+    else if(n.target.type==='FieldAccess') {
+      if(n.target.obj.type==='ThisExpression') { const s=this.symbols.lookup(n.target.name); if(!s) throw new Error(`Field ${n.target.name} not found`); this.compileExpr(n.value); this.em(`pop ${this.k2s(s.kind)} ${s.index}`); }
+      else { const off=this.resolveFieldOffset(n.target.obj,n.target.name); this.compileExpr(n.target.obj); this.em('pop pointer 1'); this.compileExpr(n.value); this.em(`pop that ${off}`); }
+    } else throw new Error(`Invalid assignment target ${n.target.type}`);
+  }
+  compileIf(n) {
+    const l1=this.gl('IF_T'), l2=this.gl('IF_F'), end=this.gl('IF_E');
+    this.compileExpr(n.condition); this.em(`if-goto ${l1}`); this.em(`goto ${l2}`);
+    this.em(`label ${l1}`); this.compileBlock(n.thenBlock); this.em(`goto ${end}`);
+    this.em(`label ${l2}`); if(n.elseBlock) { if(n.elseBlock.type==='IfStatement') this.compileIf(n.elseBlock); else this.compileBlock(n.elseBlock); }
+    this.em(`label ${end}`);
+  }
+  compileExpr(n) {
+    switch(n.type) {
+      case 'IntegerLiteral': this.em(`push constant ${n.value}`); break;
+      case 'BooleanLiteral': if(n.value){this.em('push constant 0');this.em('not');}else this.em('push constant 0'); break;
+      case 'NullLiteral': this.em('push constant 0'); break;
+      case 'ThisExpression': this.em('push pointer 0'); break;
+      case 'StringLiteral': this.em(`push constant ${n.value.length}`); this.em('call String.new 1'); for(let i=0;i<n.value.length;i++){this.em(`push constant ${n.value.charCodeAt(i)}`);this.em('call String.appendChar 2');} break;
+      case 'CharLiteral': this.em(`push constant ${n.value.charCodeAt(0)}`); break;
+      case 'VarRef': { const cv=this.getConstant(n.name); if(cv!==undefined){this.em(`push constant ${cv}`);break;} const s=this.symbols.lookup(n.name); if(!s) throw new Error(`Var ${n.name} not found`); this.em(`push ${this.k2s(s.kind)} ${s.index}`); break; }
+      case 'ArrayAccess': this.compileExpr(n.array); this.compileExpr(n.index); this.em('add'); this.em('pop pointer 1'); this.em('push that 0'); break;
+      case 'BinaryExpression':
+        if(n.operator==='&&') { const fl=this.gl('SC_F'), el=this.gl('SC_E'); this.compileExpr(n.left); this.em('push constant 0'); this.em('eq'); this.em(`if-goto ${fl}`); this.compileExpr(n.right); this.em('push constant 0'); this.em('eq'); this.em('not'); this.em(`goto ${el}`); this.em(`label ${fl}`); this.em('push constant 0'); this.em(`label ${el}`); }
+        else if(n.operator==='||') { const tl=this.gl('OR_T'), el=this.gl('OR_E'); this.compileExpr(n.left); this.em(`if-goto ${tl}`); this.compileExpr(n.right); this.em('push constant 0'); this.em('eq'); this.em('not'); this.em(`goto ${el}`); this.em(`label ${tl}`); this.em('push constant 0'); this.em('not'); this.em(`label ${el}`); }
+        else { this.compileExpr(n.left); this.compileExpr(n.right); this.compileBinOp(n.operator); }
+        break;
+      case 'UnaryExpression': this.compileExpr(n.expr); if(n.operator==='-') this.em('neg'); else if(n.operator==='~') this.em('not'); else if(n.operator==='!') { this.em('push constant 0'); this.em('eq'); } break;
+      case 'SubroutineCall': this.compileCall(n); break;
+      case 'FieldAccess':
+        if(n.obj.type==='VarRef') { const ek=`${n.obj.name}.${n.name}`; const ev=this.enumValues.get(ek); if(ev!==undefined){this.em(`push constant ${ev}`);break;} }
+        if(n.obj.type==='ThisExpression') { const s=this.symbols.lookup(n.name); if(s) this.em(`push ${this.k2s(s.kind)} ${s.index}`); else throw new Error(`Field ${n.name} not found`); }
+        else { const off=this.resolveFieldOffset(n.obj,n.name); this.compileExpr(n.obj); this.em('pop pointer 1'); this.em(`push that ${off}`); }
+        break;
+      default: throw new Error(`Unsupported expr: ${n.type}`);
+    }
+  }
+  compileBinOp(op) {
+    const m={'+':`add`,'-':'sub','&':'and','|':'or','<':'lt','>':'gt','==':'eq'};
+    if(m[op]) { this.em(m[op]); return; }
+    if(op==='!=') { this.em('eq'); this.em('not'); } else if(op==='<=') { this.em('gt'); this.em('not'); } else if(op==='>=') { this.em('lt'); this.em('not'); }
+    else if(op==='*') this.em('call Math.multiply 2'); else if(op==='/') this.em('call Math.divide 2'); else if(op==='%') this.em('call Math.modulo 2');
+    else if(op==='^') this.em('call Math.xor 2'); else if(op==='<<') this.em('call Math.shiftLeft 2'); else if(op==='>>') this.em('call Math.shiftRight 2');
+    else throw new Error(`Unsupported op ${op}`);
+  }
+  compileCall(n) {
+    if(n.name==='syscall') { for(let i=1;i<n.args.length;i++) this.compileExpr(n.args[i]); if(n.args.length>0) this.compileExpr(n.args[0]); this.em(`syscall ${n.args.length}`); return; }
+    if(!n.caller) {
+      if(n.name==='peek'&&n.args.length===1) { this.compileExpr(n.args[0]); this.em('pop pointer 1'); this.em('push that 0'); return; }
+      if(n.name==='poke'&&n.args.length===2) { this.compileExpr(n.args[0]); this.compileExpr(n.args[1]); this.em('pop temp 0'); this.em('pop pointer 1'); this.em('push temp 0'); this.em('pop that 0'); this.em('push constant 0'); return; }
+      if(n.name==='halt'&&n.args.length===0) { this.em('call Sys.halt 0'); return; }
+    }
+    let nArgs=n.args.length, callName='';
+    if(!n.caller) {
+      // Check if this is a known static function or an implicit method call
+      const fnName = `${this.className}.${n.name}`;
+      if(this.knownFunctions.has(fnName)) {
+        // Static function call -- no implicit this
+        callName = fnName;
+      } else {
+        // Implicit method call on this
+        this.em('push pointer 0'); nArgs++; callName = fnName;
+      }
+    }
+    else if(n.caller.type==='VarRef') { const s=this.symbols.lookup(n.caller.name); if(s) { this.em(`push ${this.k2s(s.kind)} ${s.index}`); nArgs++; callName=`${s.type}.${n.name}`; } else callName=`${n.caller.name}.${n.name}`; }
+    else if(n.caller.type==='ThisExpression') { this.em('push pointer 0'); nArgs++; callName=`${this.className}.${n.name}`; }
+    else throw new Error('Complex caller not supported');
+    for(const a of n.args) this.compileExpr(a);
+    this.em(`call ${callName} ${nArgs}`);
+  }
+  resolveFieldOffset(obj,fieldName) {
+    if(obj.type==='VarRef') {
+      const s=this.symbols.lookup(obj.name);
+      if(s) { const l=this.fieldLayouts.get(s.type); if(l) { const o=l.get(fieldName); if(o!==undefined) return o; } }
+    }
+    throw new Error(`Cannot resolve field '${fieldName}' -- unknown type or field`);
+  }
+  collectEnum(d) {
+    let av=0;
+    for(const v of d.values) {
+      let val;
+      if(v.value !== undefined) {
+        val = typeof v.value === 'number' ? v.value : parseInt(v.value, 10);
+        if(isNaN(val)) throw new Error(`Enum '${d.name}.${v.name}' has non-integer value '${v.value}'`);
+      } else {
+        val = av;
+      }
+      this.enumValues.set(`${d.name}.${v.name}`, val);
+      av = val + 1;
+    }
+  }
+  collectFL(name,fields) { const l=new Map(); let off=0; for(const f of fields) { if(f.kind==='field') { l.set(f.name,off); off++; } } this.fieldLayouts.set(name,l); }
+  k2s(kind) { return kind==='static'?'static':kind==='field'?'this':kind==='argument'?'argument':'local'; }
+};
+
+
+</script>
+<script>
+// Nexa VM Translator and Standard Library
+// --- VMTranslator ---
+var VMTranslator = class {
+  constructor() { this.output=[]; this.errors=[]; this.currentFunction=''; this.labelCount=0; this._fileName='Main'; this.staticAlloc=new Map(); this.nextStaticAddr=16; }
+  get fileName(){return this._fileName;} set fileName(v){this._fileName=v;}
+  get currentClassPrefix() {
+    if(!this.currentFunction) return this._fileName;
+    const dot = this.currentFunction.indexOf('.');
+    return dot >= 0 ? this.currentFunction.substring(0, dot) : this._fileName;
+  }
+  resolveStaticAddr(idx) {
+    const prefix = this.currentClassPrefix;
+    const key = `${prefix}::${idx}`;
+    if(!this.staticAlloc.has(key)) {
+      this.staticAlloc.set(key, this.nextStaticAddr);
+      this.nextStaticAddr++;
+    }
+    return this.staticAlloc.get(key);
+  }
+  translate(source, fileName='Main') {
+    this.output=[]; this.errors=[]; this.currentFunction=''; this.labelCount=0; this.fileName=fileName;
+    this.staticAlloc=new Map(); this.nextStaticAddr=16;
+    const lines=source.split('\n').map((l,i)=>({num:i+1,text:l.replace(/\/\/.*$/,'').trim()}));
+    for(const line of lines) { if(line.text==='') continue; const cmd=this.parseLine(line.text,line.num); if(cmd) this.translateCommand(cmd,line.num); }
+    return { success:this.errors.length===0, assembly:this.output.join('\n'), errors:[...this.errors] };
+  }
+  bootstrap() {
+    return ['; === VM Bootstrap ===','    LDA SP, 0xEBF0','',`    LDA A, 1`,'    LDA D, 0xEBF0','    STORE D, [A+0]',`    LDA A, 2`,'    STORE D, [A+0]','','    LDA D, _BOOT_HALT','    PUSH D','    LDA D, 0xEBF0','    PUSH D','    PUSH D','    LDI D, 0','    PUSH D','    PUSH D','','    MOV D, SP','    PUSH B','    LDI B, 4','    ADD D, B',`    LDA A, 2`,'    STORE D, [A+0]','    POP B','','    MOV D, SP',`    LDA A, 1`,'    STORE D, [A+0]','','    LDA A, Main.main','    JMP','_BOOT_HALT:','    HALT',''].join('\n');
+  }
+  parseLine(text,ln) {
+    const p=text.split(/\s+/); const cmd=p[0];
+    const arith=['add','sub','neg','eq','gt','lt','and','or','not'];
+    if(arith.includes(cmd)) return {type:'arithmetic',op:cmd};
+    if(cmd==='push'||cmd==='pop') {
+      if(p.length<3){this.addError(ln,`${cmd} needs segment and index`);return null;}
+      const idx=parseInt(p[2]);
+      if(isNaN(idx)){this.addError(ln,`Invalid index '${p[2]}' for ${cmd}`);return null;}
+      return {type:cmd,segment:p[1],index:idx};
+    }
+    if(cmd==='label') return {type:'label',name:p[1]}; if(cmd==='goto') return {type:'goto',name:p[1]}; if(cmd==='if-goto') return {type:'if-goto',name:p[1]};
+    if(cmd==='function') {
+      const nL=parseInt(p[2]);
+      if(isNaN(nL)){this.addError(ln,`Invalid nLocals '${p[2]}' for function`);return null;}
+      return {type:'function',name:p[1],nLocals:nL};
+    }
+    if(cmd==='call') {
+      const nA=parseInt(p[2]);
+      if(isNaN(nA)){this.addError(ln,`Invalid nArgs '${p[2]}' for call`);return null;}
+      return {type:'call',name:p[1],nArgs:nA};
+    }
+    if(cmd==='return') return {type:'return'};
+    if(cmd==='syscall') {
+      const nA=parseInt(p[1]);
+      if(isNaN(nA)){this.addError(ln,`Invalid nArgs '${p[1]}' for syscall`);return null;}
+      return {type:'syscall',nArgs:nA};
+    }
+    this.addError(ln,`Unknown VM command: '${cmd}'`); return null;
+  }
+  translateCommand(cmd,ln) {
+    this.emit(`; --- VM: ${this.cmdStr(cmd)} ---`);
+    switch(cmd.type) {
+      case 'arithmetic': this.trArith(cmd.op); break; case 'push': this.trPush(cmd.segment,cmd.index,ln); break; case 'pop': this.trPop(cmd.segment,cmd.index,ln); break;
+      case 'label': this.emit(`${this.ql(cmd.name)}:`); break; case 'goto': this.emit(`    LDA A, ${this.ql(cmd.name)}`); this.emit('    JMP'); break;
+      case 'if-goto': this.emit('    POP D'); this.emit('    PUSH A'); this.emit('    MOV A, D'); this.emit('    POP A'); this.emit('    BRZ 3'); this.emit(`    LDA A, ${this.ql(cmd.name)}`); this.emit('    JMP'); break;
+      case 'function': this.currentFunction=cmd.name; this.emit(`${cmd.name}:`); if(cmd.nLocals>0){this.emit('    LDI D, 0');for(let i=0;i<cmd.nLocals;i++)this.emit('    PUSH D');} break;
+      case 'call': this.trCall(cmd.name,cmd.nArgs); break; case 'return': this.trReturn(); break;
+      case 'syscall': {
+        // Pop syscall number (first arg) into D, then put remaining args into temp slots
+        // nArgs includes the syscall number
+        const nSysArgs = cmd.nArgs || 0;
+        if(nSysArgs > 0) {
+          // All args are on stack: arg_N-1 ... arg_1 arg_0(syscall#) <- top
+          // Pop syscall number (arg0) into D
+          this.emit('    POP D');
+          // Pop and discard remaining arguments to restore stack balance
+          for(let i = 1; i < nSysArgs; i++) {
+            this.emit('    POP A'); // Discard extra args
+          }
+          this.emit('    MOV A, D');
+          this.emit('    TRAP 0');
+          this.emit('    PUSH D');
+        } else {
+          this.emit('    LDI D, 0');
+          this.emit('    MOV A, D');
+          this.emit('    TRAP 0');
+          this.emit('    PUSH D');
+        }
+        break;
+      }
+    }
+  }
+  trArith(op) {
+    switch(op) {
+      case 'add': this.emit('    POP D'); this.emit('    POP A'); this.emit('    ADD D, A'); this.emit('    PUSH D'); break;
+      case 'sub': this.emit('    POP D'); this.emit('    POP A'); this.emit('    PUSH B'); this.emit('    MOV B, D'); this.emit('    MOV D, A'); this.emit('    SUB D, B'); this.emit('    POP B'); this.emit('    PUSH D'); break;
+      case 'neg': this.emit('    POP D'); this.emit('    NOT D'); this.emit('    PUSH B'); this.emit('    LDI B, 1'); this.emit('    ADD D, B'); this.emit('    POP B'); this.emit('    PUSH D'); break;
+      case 'eq': this.trCmp('BRZ'); break; case 'gt': this.trCmp('BRN'); break; case 'lt': this.trCmp('BRP'); break;
+      case 'and': this.emit('    POP D'); this.emit('    POP A'); this.emit('    AND D, A'); this.emit('    PUSH D'); break;
+      case 'or': this.emit('    POP D'); this.emit('    POP A'); this.emit('    OR D, A'); this.emit('    PUSH D'); break;
+      case 'not': this.emit('    POP D'); this.emit('    NOT D'); this.emit('    PUSH D'); break;
+    }
+  }
+  trCmp(br) {
+    const tl=this.ul('CMP_T'), el=this.ul('CMP_E');
+    const cb=br==='BRN'?'BRP':br==='BRP'?'BRN':'BRZ';
+    this.emit('    POP D'); this.emit('    POP A'); this.emit('    SUB A, D');
+    this.emit(`    ${cb} ${tl}`); this.emit('    LDI D, 0'); this.emit(`    BRA ${el}`); this.emit(`${tl}:`); this.emit('    LDI D, -1'); this.emit(`${el}:`); this.emit('    PUSH D');
+  }
+  trPush(seg,idx,ln) {
+    switch(seg) {
+      case 'constant': this.emit(`    LDA D, ${idx}`); this.emit('    PUSH D'); break;
+      case 'local': this.loadSP('local'); this.emit(`    LOAD D, [A-${idx+1}]`); this.emit('    PUSH D'); break;
+      case 'argument': this.loadSP('argument'); if(idx===0) this.emit('    LOAD D, [A+0]'); else this.emit(`    LOAD D, [A-${idx}]`); this.emit('    PUSH D'); break;
+      case 'this': case 'that': this.loadSP(seg); this.emit(`    LOAD D, [A+${idx}]`); this.emit('    PUSH D'); break;
+      case 'temp': this.emit(`    LDA A, ${5+idx}`); this.emit('    LOAD D, [A+0]'); this.emit('    PUSH D'); break;
+      case 'pointer': this.emit(`    LDA A, ${idx===0?3:4}`); this.emit('    LOAD D, [A+0]'); this.emit('    PUSH D'); break;
+      case 'static': { const sa=this.resolveStaticAddr(idx); this.emit(`    LDA A, ${sa}`); this.emit('    LOAD D, [A+0]'); this.emit('    PUSH D'); break; }
+      default: this.addError(ln,`Unknown segment '${seg}'`);
+    }
+  }
+  trPop(seg,idx,ln) {
+    switch(seg) {
+      case 'local': this.emit('    POP D'); this.emit('    PUSH D'); this.loadSP('local'); this.emit('    POP D'); this.emit(`    STORE D, [A-${idx+1}]`); break;
+      case 'argument': this.emit('    POP D'); this.emit('    PUSH D'); this.loadSP('argument'); this.emit('    POP D'); if(idx===0) this.emit('    STORE D, [A+0]'); else this.emit(`    STORE D, [A-${idx}]`); break;
+      case 'this': case 'that': this.emit('    POP D'); this.emit('    PUSH D'); this.loadSP(seg); this.emit('    POP D'); this.emit(`    STORE D, [A+${idx}]`); break;
+      case 'temp': this.emit('    POP D'); this.emit(`    LDA A, ${5+idx}`); this.emit('    STORE D, [A+0]'); break;
+      case 'pointer': this.emit('    POP D'); this.emit(`    LDA A, ${idx===0?3:4}`); this.emit('    STORE D, [A+0]'); break;
+      case 'static': { const sa=this.resolveStaticAddr(idx); this.emit('    POP D'); this.emit(`    LDA A, ${sa}`); this.emit('    STORE D, [A+0]'); break; }
+      default: this.addError(ln,`Cannot pop to '${seg}'`);
+    }
+  }
+  loadSP(seg) { const m={local:1,argument:2,this:3,that:4}; this.emit(`    LDA A, ${m[seg]}`); this.emit('    LOAD A, [A+0]'); }
+  trCall(name,nArgs) {
+    const rl=this.ul('RET');
+    this.emit(`    LDA D, ${rl}`); this.emit('    PUSH D');
+    this.pushFA(1); this.pushFA(2); this.pushFA(3); this.pushFA(4);
+    this.emit('    MOV D, SP'); this.emit('    PUSH B'); this.emit(`    LDI B, ${nArgs+4}`); this.emit('    ADD D, B'); this.emit('    LDA A, 2'); this.emit('    STORE D, [A+0]'); this.emit('    POP B');
+    this.emit('    MOV D, SP'); this.emit('    LDA A, 1'); this.emit('    STORE D, [A+0]');
+    this.emit(`    LDA A, ${name}`); this.emit('    JMP'); this.emit(`${rl}:`);
+  }
+  trReturn() {
+    this.emit('    LDA A, 1'); this.emit('    LOAD D, [A+0]'); this.emit('    LDA A, 12'); this.emit('    STORE D, [A+0]');
+    this.emit('    MOV A, D'); this.emit('    LOAD D, [A+4]'); this.emit('    LDA A, 11'); this.emit('    STORE D, [A+0]');
+    this.emit('    POP D'); this.emit('    LDA A, 2'); this.emit('    LOAD A, [A+0]'); this.emit('    STORE D, [A+0]');
+    this.emit('    LDA A, 2'); this.emit('    LOAD D, [A+0]'); this.emit('    MOV SP, D');
+    this.restoreFrame(0,4); this.restoreFrame(1,3); this.restoreFrame(2,2); this.restoreFrame(3,1);
+    this.emit('    LDA A, 11'); this.emit('    LOAD A, [A+0]'); this.emit('    JMP');
+  }
+  pushFA(addr) { this.emit(`    LDA A, ${addr}`); this.emit('    LOAD D, [A+0]'); this.emit('    PUSH D'); }
+  restoreFrame(off,dest) { this.emit('    LDA A, 12'); this.emit('    LOAD A, [A+0]'); this.emit(`    LOAD D, [A+${off}]`); this.emit(`    LDA A, ${dest}`); this.emit('    STORE D, [A+0]'); }
+  ql(name) { return this.currentFunction?`${this.currentFunction}$${name}`:name; }
+  ul(prefix) { return `_VM_${prefix}_${this.labelCount++}`; }
+  emit(line) { this.output.push(line); }
+  addError(ln,msg) { this.errors.push(`VM line ${ln}: ${msg}`); }
+  cmdStr(c) { switch(c.type){case'arithmetic':return c.op;case'push':case'pop':return `${c.type} ${c.segment} ${c.index}`;case'label':case'goto':case'if-goto':return `${c.type} ${c.name}`;case'function':return `function ${c.name} ${c.nLocals}`;case'call':return `call ${c.name} ${c.nArgs}`;case'return':return 'return';case'syscall':return `syscall ${c.nArgs}`;} }
+};
+
+// --- STDLIB_VM ---
+var STDLIB_VM = `
+function Math.multiply 3
+push constant 0
+pop local 0
+push argument 0
+pop local 1
+push constant 1
+pop local 2
+label Math.multiply$loop
+push local 2
+push constant 0
+eq
+if-goto Math.multiply$done
+push argument 1
+push local 2
+and
+push constant 0
+eq
+if-goto Math.multiply$skip
+push local 0
+push local 1
+add
+pop local 0
+label Math.multiply$skip
+push local 1
+push local 1
+add
+pop local 1
+push local 2
+push local 2
+add
+pop local 2
+goto Math.multiply$loop
+label Math.multiply$done
+push local 0
+return
+function Math.divide 4
+push constant 0
+pop local 0
+push constant 0
+pop local 3
+push argument 0
+pop local 1
+push argument 1
+pop local 2
+push local 1
+push constant 0
+lt
+not
+if-goto Math.divide$apos
+push constant 0
+push local 1
+sub
+pop local 1
+push local 3
+not
+pop local 3
+label Math.divide$apos
+push local 2
+push constant 0
+lt
+not
+if-goto Math.divide$bpos
+push constant 0
+push local 2
+sub
+pop local 2
+push local 3
+not
+pop local 3
+label Math.divide$bpos
+push constant 0
+pop static 246
+push local 1
+push local 2
+call Math._divU 2
+pop local 0
+push local 3
+push constant 0
+eq
+if-goto Math.divide$ret
+push constant 0
+push local 0
+sub
+pop local 0
+label Math.divide$ret
+push local 0
+return
+function Math._divU 1
+push argument 1
+push argument 0
+gt
+if-goto Math._divU$base
+push argument 1
+push constant 0
+lt
+if-goto Math._divU$base
+push argument 0
+push argument 1
+push argument 1
+add
+call Math._divU 2
+pop local 0
+push argument 0
+push static 246
+sub
+push argument 1
+lt
+if-goto Math._divU$even
+push static 246
+push argument 1
+add
+pop static 246
+push local 0
+push local 0
+add
+push constant 1
+add
+return
+label Math._divU$even
+push local 0
+push local 0
+add
+return
+label Math._divU$base
+push constant 0
+pop static 246
+push constant 0
+return
+function Math.modulo 2
+push argument 0
+push argument 1
+call Math.divide 2
+pop local 0
+push local 0
+push argument 1
+call Math.multiply 2
+pop local 1
+push argument 0
+push local 1
+sub
+return
+function Math.xor 0
+push argument 0
+push argument 1
+or
+push argument 0
+push argument 1
+and
+not
+and
+return
+function Math.shiftLeft 1
+push argument 0
+pop local 0
+label Math.shiftLeft$loop
+push argument 1
+push constant 0
+gt
+not
+if-goto Math.shiftLeft$done
+push local 0
+push local 0
+add
+pop local 0
+push argument 1
+push constant 1
+sub
+pop argument 1
+goto Math.shiftLeft$loop
+label Math.shiftLeft$done
+push local 0
+return
+function Math.shiftRight 2
+push constant 1
+pop local 0
+push argument 1
+pop local 1
+label Math.shiftRight$pow
+push local 1
+push constant 0
+gt
+not
+if-goto Math.shiftRight$divide
+push local 0
+push local 0
+add
+pop local 0
+push local 1
+push constant 1
+sub
+pop local 1
+goto Math.shiftRight$pow
+label Math.shiftRight$divide
+push argument 0
+push local 0
+call Math.divide 2
+return
+function Math.min 0
+push argument 0
+push argument 1
+lt
+if-goto Math.min$a
+push argument 1
+return
+label Math.min$a
+push argument 0
+return
+function Math.max 0
+push argument 0
+push argument 1
+gt
+if-goto Math.max$a
+push argument 1
+return
+label Math.max$a
+push argument 0
+return
+function Math.abs 0
+push argument 0
+push constant 0
+lt
+not
+if-goto Math.abs$pos
+push constant 0
+push argument 0
+sub
+return
+label Math.abs$pos
+push argument 0
+return
+function Memory.peek 0
+push argument 0
+pop pointer 1
+push that 0
+return
+function Memory.poke 0
+push argument 0
+pop pointer 1
+push argument 1
+pop that 0
+push constant 0
+return
+function Memory.alloc 2
+push constant 60401
+pop pointer 1
+push that 0
+pop local 1
+push local 1
+push constant 0
+eq
+not
+if-goto Memory.alloc$ready
+push constant 8192
+pop local 1
+label Memory.alloc$ready
+push local 1
+pop local 0
+push local 0
+pop pointer 1
+push argument 0
+pop that 0
+push local 1
+push argument 0
+add
+push constant 1
+add
+pop local 1
+push constant 60401
+pop pointer 1
+push local 1
+pop that 0
+push local 0
+push constant 1
+add
+return
+function Memory.deAlloc 0
+push constant 0
+return
+function String.new 1
+push argument 0
+push constant 2
+add
+call Memory.alloc 1
+pop local 0
+push local 0
+pop pointer 1
+push argument 0
+pop that 0
+push local 0
+push constant 1
+add
+pop pointer 1
+push constant 0
+pop that 0
+push local 0
+return
+function String.dispose 0
+push argument 0
+call Memory.deAlloc 1
+pop temp 0
+push constant 0
+return
+function String.length 0
+push argument 0
+push constant 1
+add
+pop pointer 1
+push that 0
+return
+function String.charAt 0
+push argument 0
+push constant 2
+add
+push argument 1
+add
+pop pointer 1
+push that 0
+return
+function String.appendChar 1
+push argument 0
+push constant 1
+add
+pop pointer 1
+push that 0
+pop local 0
+push argument 0
+push constant 2
+add
+push local 0
+add
+pop pointer 1
+push argument 1
+pop that 0
+push local 0
+push constant 1
+add
+pop local 0
+push argument 0
+push constant 1
+add
+pop pointer 1
+push local 0
+pop that 0
+push argument 0
+return
+function Array.new 0
+push argument 0
+call Memory.alloc 1
+return
+function Array.dispose 0
+push argument 0
+call Memory.deAlloc 1
+pop temp 0
+push constant 0
+return
+function Output.printChar 2
+push constant 60402
+pop pointer 1
+push that 0
+pop local 0
+push constant 60416
+push local 0
+add
+pop local 1
+push local 1
+pop pointer 1
+push argument 0
+push constant 255
+gt
+if-goto Output.printChar$hasattr
+push constant 3840
+push argument 0
+or
+goto Output.printChar$write
+label Output.printChar$hasattr
+push argument 0
+label Output.printChar$write
+pop that 0
+push local 0
+push constant 1
+add
+pop local 0
+push local 0
+push constant 2400
+lt
+if-goto Output.printChar$ok
+push constant 0
+pop local 0
+label Output.printChar$ok
+push constant 60402
+pop pointer 1
+push local 0
+pop that 0
+push constant 0
+return
+function Output.printString 2
+push constant 0
+pop local 0
+push argument 0
+call String.length 1
+pop local 1
+label Output.printString$loop
+push local 0
+push local 1
+lt
+not
+if-goto Output.printString$done
+push argument 0
+push local 0
+call String.charAt 2
+call Output.printChar 1
+pop temp 0
+push local 0
+push constant 1
+add
+pop local 0
+goto Output.printString$loop
+label Output.printString$done
+push constant 0
+return
+function Output.printInt 4
+push argument 0
+push constant 0
+lt
+not
+if-goto Output.printInt$pos
+push constant 45
+call Output.printChar 1
+pop temp 0
+push constant 0
+push argument 0
+sub
+pop local 0
+goto Output.printInt$start
+label Output.printInt$pos
+push argument 0
+pop local 0
+label Output.printInt$start
+push constant 10000
+pop local 2
+label Output.printInt$skipzero
+push local 2
+push constant 1
+gt
+not
+if-goto Output.printInt$print
+push local 0
+push local 2
+lt
+not
+if-goto Output.printInt$print
+push local 2
+push constant 10
+call Math.divide 2
+pop local 2
+goto Output.printInt$skipzero
+label Output.printInt$print
+label Output.printInt$digitloop
+push local 2
+push constant 0
+gt
+not
+if-goto Output.printInt$done
+push local 0
+push local 2
+call Math.divide 2
+pop local 3
+push local 3
+push constant 48
+add
+call Output.printChar 1
+pop temp 0
+push local 3
+push local 2
+call Math.multiply 2
+pop temp 0
+push local 0
+push temp 0
+sub
+pop local 0
+push local 2
+push constant 10
+call Math.divide 2
+pop local 2
+goto Output.printInt$digitloop
+label Output.printInt$done
+push constant 0
+return
+function Output.println 2
+push constant 60402
+pop pointer 1
+push that 0
+pop local 0
+push local 0
+push constant 80
+call Math.modulo 2
+pop local 1
+push local 0
+push constant 80
+push local 1
+sub
+add
+pop local 0
+push local 0
+push constant 2400
+lt
+if-goto Output.println$ok
+push constant 0
+pop local 0
+label Output.println$ok
+push constant 60402
+pop pointer 1
+push local 0
+pop that 0
+push constant 0
+return
+function Sys.halt 0
+label Sys.halt$spin
+goto Sys.halt$spin
+push constant 0
+return
+function Sys.error 0
+push constant 69
+call Output.printChar 1
+pop temp 0
+push constant 82
+call Output.printChar 1
+pop temp 0
+push constant 82
+call Output.printChar 1
+pop temp 0
+push argument 0
+call Output.printInt 1
+pop temp 0
+label Sys.error$halt
+goto Sys.error$halt
+push constant 0
+return
+function Sys.wait 1
+push argument 0
+push constant 10
+call Math.multiply 2
+pop local 0
+label Sys.wait$loop
+push local 0
+push constant 0
+gt
+not
+if-goto Sys.wait$done
+push local 0
+push constant 1
+sub
+pop local 0
+goto Sys.wait$loop
+label Sys.wait$done
+push constant 0
+return
+
+// Math.sqrt(x) -> floor(sqrt(x)) via binary search
+function Math.sqrt 3
+push constant 0
+pop local 0
+push constant 255
+pop local 1
+label Math.sqrt$loop
+push local 0
+push local 1
+gt
+if-goto Math.sqrt$done
+push local 0
+push local 1
+add
+push constant 1
+add
+push constant 1
+call Math.shiftRight 2
+pop local 2
+push local 2
+push local 2
+call Math.multiply 2
+push argument 0
+gt
+if-goto Math.sqrt$less
+push local 2
+pop local 0
+goto Math.sqrt$loop
+label Math.sqrt$less
+push local 2
+push constant 1
+sub
+pop local 1
+goto Math.sqrt$loop
+label Math.sqrt$done
+push local 0
+return
+
+// Output.moveCursor(row, col)
+function Output.moveCursor 0
+push argument 0
+push constant 80
+call Math.multiply 2
+push argument 1
+add
+push constant 60402
+pop pointer 1
+pop that 0
+push constant 0
+return
+
+// Output.backSpace()
+function Output.backSpace 1
+push constant 60402
+pop pointer 1
+push that 0
+pop local 0
+push local 0
+push constant 0
+gt
+not
+if-goto Output.backSpace$done
+push local 0
+push constant 1
+sub
+pop local 0
+push constant 60402
+pop pointer 1
+push local 0
+pop that 0
+push constant 60416
+push local 0
+add
+pop pointer 1
+push constant 0
+pop that 0
+label Output.backSpace$done
+push constant 0
+return
+
+// Screen.clearScreen()
+function Screen.clearScreen 2
+push constant 60416
+pop local 0
+push constant 65280
+pop local 1
+label Screen.clearScreen$loop
+push local 0
+push local 1
+lt
+not
+if-goto Screen.clearScreen$done
+push local 0
+pop pointer 1
+push constant 0
+pop that 0
+push local 0
+push constant 1
+add
+pop local 0
+goto Screen.clearScreen$loop
+label Screen.clearScreen$done
+push constant 0
+return
+
+// Screen.setColor(color)
+function Screen.setColor 0
+push constant 60403
+pop pointer 1
+push argument 0
+pop that 0
+push constant 0
+return
+
+// Screen.drawPixel(x, y)
+function Screen.drawPixel 5
+push argument 1
+push constant 40
+call Math.multiply 2
+push argument 0
+push constant 4
+call Math.divide 2
+add
+push constant 60416
+add
+pop local 0
+push argument 0
+push constant 3
+and
+pop local 1
+push constant 3
+push local 1
+sub
+push constant 4
+call Math.multiply 2
+pop local 2
+push constant 60403
+pop pointer 1
+push that 0
+pop local 4
+push local 4
+push local 2
+call Math.shiftLeft 2
+pop local 4
+push constant 15
+push local 2
+call Math.shiftLeft 2
+not
+pop local 3
+push local 0
+pop pointer 1
+push that 0
+push local 3
+and
+push local 4
+or
+pop temp 0
+push local 0
+pop pointer 1
+push temp 0
+pop that 0
+push constant 0
+return
+
+// Screen.drawRectangle(x1, y1, x2, y2)
+function Screen.drawRectangle 2
+push argument 1
+pop local 0
+label Screen.drawRectangle$yloop
+push local 0
+push argument 3
+gt
+if-goto Screen.drawRectangle$done
+push argument 0
+pop local 1
+label Screen.drawRectangle$xloop
+push local 1
+push argument 2
+gt
+if-goto Screen.drawRectangle$xdone
+push local 1
+push local 0
+call Screen.drawPixel 2
+pop temp 0
+push local 1
+push constant 1
+add
+pop local 1
+goto Screen.drawRectangle$xloop
+label Screen.drawRectangle$xdone
+push local 0
+push constant 1
+add
+pop local 0
+goto Screen.drawRectangle$yloop
+label Screen.drawRectangle$done
+push constant 0
+return
+
+// Screen.drawLine(x1, y1, x2, y2)
+function Screen.drawLine 0
+push argument 0
+push argument 1
+push argument 2
+push argument 3
+call Screen.drawRectangle 4
+return
+
+// Screen.drawCircle -- placeholder
+function Screen.drawCircle 0
+push constant 0
+return
+
+// Keyboard.keyPressed() -> current key (0 if none)
+function Keyboard.keyPressed 0
+push constant 65280
+pop pointer 1
+push that 0
+return
+
+// Keyboard.readChar() -> char (blocking)
+// Polls status at 0xFF00, then reads data from 0xFF01 (which clears status)
+function Keyboard.readChar 1
+label Keyboard.readChar$wait
+push constant 65280
+pop pointer 1
+push that 0
+push constant 0
+eq
+if-goto Keyboard.readChar$wait
+push constant 65281
+pop pointer 1
+push that 0
+pop local 0
+push local 0
+return
+
+// String.eraseLastChar(str)
+function String.eraseLastChar 1
+push argument 0
+push constant 1
+add
+pop pointer 1
+push that 0
+pop local 0
+push local 0
+push constant 0
+eq
+if-goto String.eraseLastChar$nop
+push local 0
+push constant 1
+sub
+pop local 0
+push argument 0
+push constant 1
+add
+pop pointer 1
+push local 0
+pop that 0
+label String.eraseLastChar$nop
+push constant 0
+return
+
+// String.setCharAt(str, index, char)
+function String.setCharAt 0
+push argument 0
+push constant 2
+add
+push argument 1
+add
+pop pointer 1
+push argument 2
+pop that 0
+push constant 0
+return
+`;
+
+// ============================================================
+// END NEXA COMPILER PIPELINE
+// ============================================================
+
+
+</script>
+<script>
+// Utility functions
+var escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+var hex = (n, width = 4) => (n & 65535).toString(16).toUpperCase().padStart(width, "0");
+var bin16 = (n) => (n & 65535).toString(2).padStart(16, "0");
+var parseFlexibleNumber = (s) => {
+  if (!s) return null;
+  const t = String(s).trim();
+  if (/^0x[0-9a-f]+$/i.test(t)) return parseInt(t, 16) & 65535;
+  if (/^0b[01]+$/i.test(t)) return parseInt(t.slice(2), 2) & 65535;
+  if (/^-?\d+$/.test(t)) return parseInt(t, 10) & 65535;
+  return null;
+};
+var asciiFromKey = (event) => {
+  if (event.key.length === 1) return event.key.charCodeAt(0) & 255;
+  if (event.key === "Enter") return 10;
+  if (event.key === "Backspace") return 8;
+  if (event.key === "Tab") return 9;
+  if (event.key === "Escape") return 27;
+  return null;
+};
+
+
+</script>
+<script>
+// os-boot.js — NexaOS Boot: links bootloader ASM + Nexa OS, assembles, and runs
+(function() {
+  "use strict";
+
+  // --- DOM refs ---
+  var bootloaderEditor = document.getElementById("bootloaderEditor");
+  var osEditor = document.getElementById("osEditor");
+  var bootBtn = document.getElementById("bootBtn");
+  var resetBtn = document.getElementById("resetBtn");
+  var pauseBtn = document.getElementById("pauseBtn");
+  var resumeBtn = document.getElementById("resumeBtn");
+  var importBootBtn = document.getElementById("importBootBtn");
+  var importOsBtn = document.getElementById("importOsBtn");
+  var toggleSetupBtn = document.getElementById("toggleSetup");
+  var screen = document.getElementById("screen");
+  var statusEl = document.getElementById("status");
+  var errorPanel = document.getElementById("errorPanel");
+  var setupPanel = document.getElementById("setupPanel");
+  var speedEl = document.getElementById("speed");
+
+  // --- Graphics setup (same as app.js) ---
+  var gfxCtx = screen.getContext("2d");
+  var gfxImgData = gfxCtx.createImageData(640, 480);
+  var gfxBuf32 = new Uint32Array(gfxImgData.data.buffer);
+  var palette32 = new Uint32Array(16);
+  for (var pi = 0; pi < 16; pi++) {
+    var c = PALETTE[pi];
+    var r = parseInt(c.slice(1,3),16), g = parseInt(c.slice(3,5),16), b = parseInt(c.slice(5,7),16);
+    palette32[pi] = 0xFF000000 | (b << 16) | (g << 8) | r;
+  }
+
+  function renderFbText(fb) {
+    var buf = gfxBuf32, pal = palette32, font = FONT_8X8;
+    for (var row = 0; row < 30; row++) {
+      var fbRowOff = row * 80, screenRowBase = row * 16 * 640;
+      for (var col = 0; col < 80; col++) {
+        var word = fb[fbRowOff + col];
+        var bgC = pal[(word >> 12) & 15], fgC = pal[(word >> 8) & 15];
+        var ch = word & 255;
+        var fontBase = ch < 128 ? ch * 8 : -1;
+        var colBase = screenRowBase + col * 8;
+        for (var py = 0; py < 8; py++) {
+          var fb2 = fontBase >= 0 ? font[fontBase + py] : 0;
+          var off = colBase + py * 2 * 640;
+          buf[off]     = fb2 & 128 ? fgC : bgC;
+          buf[off + 1] = fb2 & 64  ? fgC : bgC;
+          buf[off + 2] = fb2 & 32  ? fgC : bgC;
+          buf[off + 3] = fb2 & 16  ? fgC : bgC;
+          buf[off + 4] = fb2 & 8   ? fgC : bgC;
+          buf[off + 5] = fb2 & 4   ? fgC : bgC;
+          buf[off + 6] = fb2 & 2   ? fgC : bgC;
+          buf[off + 7] = fb2 & 1   ? fgC : bgC;
+          var off2 = off + 640;
+          buf[off2]     = buf[off];
+          buf[off2 + 1] = buf[off + 1];
+          buf[off2 + 2] = buf[off + 2];
+          buf[off2 + 3] = buf[off + 3];
+          buf[off2 + 4] = buf[off + 4];
+          buf[off2 + 5] = buf[off + 5];
+          buf[off2 + 6] = buf[off + 6];
+          buf[off2 + 7] = buf[off + 7];
+        }
+      }
+    }
+    gfxCtx.putImageData(gfxImgData, 0, 0);
+  }
+
+  function renderFbPixel(fb) {
+    var buf = gfxBuf32, pal = palette32;
+    for (var y = 0; y < 120; y++) {
+      var fbRow = y * 40, screenBase = y * 4 * 640;
+      for (var xWord = 0; xWord < 40; xWord++) {
+        var word = fb[fbRow + xWord];
+        var c0 = pal[word >> 12 & 15], c1 = pal[word >> 8 & 15];
+        var c2 = pal[word >> 4 & 15], c3 = pal[word & 15];
+        var baseX = xWord * 16;
+        for (var dy = 0; dy < 4; dy++) {
+          var rr = screenBase + dy * 640 + baseX;
+          buf[rr]=c0;buf[rr+1]=c0;buf[rr+2]=c0;buf[rr+3]=c0;
+          buf[rr+4]=c1;buf[rr+5]=c1;buf[rr+6]=c1;buf[rr+7]=c1;
+          buf[rr+8]=c2;buf[rr+9]=c2;buf[rr+10]=c2;buf[rr+11]=c2;
+          buf[rr+12]=c3;buf[rr+13]=c3;buf[rr+14]=c3;buf[rr+15]=c3;
+        }
+      }
+    }
+    gfxCtx.putImageData(gfxImgData, 0, 0);
+  }
+
+  // --- State ---
+  var running = false;
+  var displayMode = 0;
+  var lastFb = new Uint16Array(4800);
+  var keyboardQueue = [];
+  var wKbSt = 0;
+  var rafId = 0;
+  var pendingRender = false;
+
+  // --- Worker ---
+  var emuWorkerCodeEl = document.getElementById("emuWorkerCode");
+  var emuWorkerBlob = new Blob([emuWorkerCodeEl.textContent], { type: "text/javascript" });
+  var emuWorkerUrl = URL.createObjectURL(emuWorkerBlob);
+  var emu = new Worker(emuWorkerUrl);
+
+  emu.onmessage = function(e) {
+    var msg = e.data;
+    switch (msg.t) {
+      case "snap":
+        lastFb = new Uint16Array(msg.fb);
+        displayMode = msg.dm;
+        wKbSt = msg.ks;
+        if (msg.u && msg.u.length > 0) { /* UART output — could show in a console panel */ }
+        if (running) {
+          pendingRender = true;
+          if (!rafId) rafId = requestAnimationFrame(renderFrame);
+        } else {
+          renderScreen();
+        }
+        break;
+      case "stop":
+        running = false;
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        pendingRender = false;
+        if (msg.reason === "halted") setStatus("CPU stoppet (HALT).");
+        else setStatus("Pauset.");
+        renderScreen();
+        break;
+      case "dm":
+        displayMode = msg.mode;
+        break;
+    }
+  };
+
+  function renderScreen() {
+    if (displayMode === 0) renderFbText(lastFb); else renderFbPixel(lastFb);
+  }
+
+  function renderFrame() {
+    rafId = 0;
+    if (pendingRender) { renderScreen(); pendingRender = false; }
+    if (running) rafId = requestAnimationFrame(renderFrame);
+  }
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg;
+    statusEl.className = "status" + (isError ? " error" : "");
+  }
+
+  function showErrors(text) {
+    errorPanel.textContent = text;
+    errorPanel.classList.toggle("visible", !!text);
+  }
+
+  function importTextFile(file, targetEditor, label) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function() {
+      targetEditor.value = String(reader.result || "").replace(/^\uFEFF/, "");
+      showErrors("");
+      setStatus(label + " importert: " + file.name);
+    };
+    reader.onerror = function() {
+      setStatus("Kunne ikke lese " + label + ".", true);
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  // --- Keyboard input → emulator ---
+  function pumpInputQueue() {
+    if (!keyboardQueue.length) return;
+    if (wKbSt === 0) {
+      var ascii = keyboardQueue.shift();
+      emu.postMessage({t: "key", a: ascii});
+    }
+  }
+  setInterval(function() { if (running) pumpInputQueue(); }, 50);
+
+  screen.addEventListener("keydown", function(ev) {
+    var ascii = asciiFromKey(ev);
+    if (ascii !== null) { keyboardQueue.push(ascii); pumpInputQueue(); ev.preventDefault(); }
+  });
+  screen.addEventListener("click", function() { screen.focus(); });
+
+  // --- Compile & Link ---
+  /**
+   * Compiles Nexa OS to assembly, prepends the bootloader ASM,
+   * generates the VM bootstrap, assembles everything into machine code.
+   *
+   * Memory layout:
+   *   [0x0000 ...] Bootloader ASM
+   *   [continued ]  __vm_boot: VM bootstrap (sets SP, base ptrs, calls Main.main)
+   *   [continued ]  Nexa stdlib + OS compiled assembly
+   */
+  function compileAndLink(bootloaderSrc, osSrc) {
+    showErrors("");
+
+    // 1. Compile Nexa OS → VM code
+    var vmCode;
+    try {
+      var parser = new Parser(osSrc);
+      var ast = parser.parse();
+      var codegen = new CodeGenerator();
+      vmCode = codegen.generate(ast, "Main");
+    } catch (e) {
+      return { success: false, error: "Nexa kompileringsfeil:\n" + e.message };
+    }
+
+    // 2. Translate VM code (with stdlib) → assembly
+    var fullVM = STDLIB_VM + "\n" + vmCode;
+    var vmTranslator = new VMTranslator();
+    var vmResult = vmTranslator.translate(fullVM, "Main");
+    if (!vmResult.success) {
+      return { success: false, error: "VM-oversetterfeil:\n" + vmResult.errors.join("\n") };
+    }
+
+    // 3. Generate the VM bootstrap with a label the bootloader can jump to
+    var vmBootstrap = [
+      "",
+      "; === VM Bootstrap (auto-generated) ===",
+      "__vm_boot:",
+      "    LDA SP, 0xEBF0",
+      "",
+      "    LDA A, 1",
+      "    LDA D, 0xEBF0",
+      "    STORE D, [A+0]",
+      "    LDA A, 2",
+      "    STORE D, [A+0]",
+      "",
+      "    LDA D, __vm_halt",
+      "    PUSH D",
+      "    LDA D, 0xEBF0",
+      "    PUSH D",
+      "    PUSH D",
+      "    LDI D, 0",
+      "    PUSH D",
+      "    PUSH D",
+      "",
+      "    MOV D, SP",
+      "    PUSH B",
+      "    LDI B, 4",
+      "    ADD D, B",
+      "    LDA A, 2",
+      "    STORE D, [A+0]",
+      "    POP B",
+      "",
+      "    MOV D, SP",
+      "    LDA A, 1",
+      "    STORE D, [A+0]",
+      "",
+      "    LDA A, Main.main",
+      "    JMP",
+      "__vm_halt:",
+      "    HALT",
+      ""
+    ].join("\n");
+
+    // 4. Concatenate: bootloader ASM + VM bootstrap + compiled Nexa ASM
+    var fullAssembly = bootloaderSrc + "\n" + vmBootstrap + "\n" + vmResult.assembly;
+
+    // 5. Assemble
+    var assembler = new Assembler();
+    var asmResult = assembler.assemble(fullAssembly);
+    if (!asmResult.success) {
+      return { success: false, error: "Assembly-feil:\n" + asmResult.errors.join("\n") };
+    }
+
+    return { success: true, code: asmResult.code, symbols: asmResult.symbols, fullAssembly: fullAssembly };
+  }
+
+  // --- Boot ---
+  function boot() {
+    var bootloaderSrc = bootloaderEditor.value;
+    var osSrc = osEditor.value;
+
+    setStatus("Kompilerer og linker...");
+    var result = compileAndLink(bootloaderSrc, osSrc);
+
+    if (!result.success) {
+      setStatus("Kompilering feilet.", true);
+      showErrors(result.error);
+      return;
+    }
+
+    showErrors("");
+
+    // Reset and load
+    var buf = result.code.buffer.slice(0);
+    emu.postMessage({t: "load", code: buf}, [buf]);
+
+    // Collapse setup panel and focus screen
+    setupPanel.classList.add("collapsed");
+    toggleSetupBtn.textContent = "\u25B6";
+
+    // Run
+    running = true;
+    keyboardQueue = [];
+    var speed = Number(speedEl.value) || 500000;
+    emu.postMessage({t: "run", speed: speed});
+    if (!rafId) rafId = requestAnimationFrame(renderFrame);
+    setStatus("NexaOS bootet — " + result.code.length + " ord lastet. Klikk skjermen for tastaturinput.");
+    screen.focus();
+  }
+
+  // --- Controls ---
+  bootBtn.addEventListener("click", boot);
+
+  function pickTextFile(accept, label, onFile) {
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.top = "-9999px";
+    document.body.appendChild(input);
+    input.addEventListener("change", function() {
+      try {
+        var file = input.files && input.files[0];
+        if (file) onFile(file);
+      } finally {
+        document.body.removeChild(input);
+      }
+    }, { once: true });
+    input.click();
+  }
+
+  importBootBtn.addEventListener("click", function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    pickTextFile(".asm,.txt", "boot.asm", function(file) {
+      importTextFile(file, bootloaderEditor, "boot.asm");
+    });
+  });
+
+  importOsBtn.addEventListener("click", function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    pickTextFile(".nx,.txt", "nexaos.nx", function(file) {
+      importTextFile(file, osEditor, "nexaos.nx");
+    });
+  });
+
+  resetBtn.addEventListener("click", function() {
+    running = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    emu.postMessage({t: "reset"});
+    keyboardQueue = [];
+    setStatus("Maskinen nullstilt. Klikk Boot for å starte.");
+    renderScreen();
+  });
+
+  pauseBtn.addEventListener("click", function() {
+    running = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    emu.postMessage({t: "pause"});
+    setStatus("Pauset.");
+  });
+
+  resumeBtn.addEventListener("click", function() {
+    running = true;
+    var speed = Number(speedEl.value) || 500000;
+    emu.postMessage({t: "run", speed: speed});
+    if (!rafId) rafId = requestAnimationFrame(renderFrame);
+    setStatus("Kjører...");
+    screen.focus();
+  });
+
+  toggleSetupBtn.addEventListener("click", function() {
+    var collapsed = setupPanel.classList.toggle("collapsed");
+    toggleSetupBtn.textContent = collapsed ? "\u25B6" : "\u25C0";
+  });
+
+  speedEl.addEventListener("input", function() {
+    emu.postMessage({t: "spd", v: Number(speedEl.value)});
+  });
+
+  // Clean up on page close
+  window.addEventListener("beforeunload", function() { emu.terminate(); URL.revokeObjectURL(emuWorkerUrl); });
+
+  // Initial render
+  renderScreen();
+  setStatus("Klar. Rediger bootloader og OS-kode, klikk deretter Boot.");
+
+})();
+
+</script>
+
+</body>
+</html>

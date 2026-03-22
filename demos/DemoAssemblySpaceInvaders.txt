@@ -1,0 +1,1327 @@
+; ============================================================
+; NEXA-16 SPACE INVADERS-LITE (PURE ASSEMBLY)
+; ------------------------------------------------------------
+; Based on the Nexa version you posted.
+;
+; Controls:
+;   Q / q       = quit (falls into halt loop)
+;   left / a/A  = move left
+;   right / d/D = move right
+;   space       = shoot
+;
+; Notes:
+; - X coordinates are WORD coordinates in pixel mode.
+; - 1 word = 4 horizontal pixels.
+; - Player: 2 words x 4 rows
+; - Bullet: 1 word  x 4 rows
+; - Alien : 2 words x 8 rows
+; - Uses timer millis-low (FF13) only for ~30 FPS pacing.
+; ============================================================
+
+; ------------------------------------------------------------
+; RAM scratch layout
+; ------------------------------------------------------------
+; 0x0800  playerWX
+; 0x0801  playerY
+; 0x0802  bulletWX
+; 0x0803  bulletY
+; 0x0804  bulletActive
+; 0x0805  alienDir
+; 0x0806  alienTick
+; 0x0807  moveDown
+; 0x0808  key
+; 0x0809  hit
+; 0x080A  i
+; 0x080B  startWX
+; 0x080C  frameStartLow
+; 0x080D  tmp0
+; 0x080E  tmp1
+; 0x080F  tmp2
+; 0x0810  argWX
+; 0x0811  argY
+; 0x0812  argColor
+; 0x0813  curAddr
+; 0x0814  slotAddr
+; 0x0815  count
+;
+; 0x0900..0x0977  rows[120]
+; 0x0980..0x0984  alienWX[5]
+; 0x0985..0x0989  alienY[5]
+; 0x098A..0x098E  alienActive[5]
+
+; ------------------------------------------------------------
+; Vectors
+; ------------------------------------------------------------
+.ORG 0x0000
+    LDA A, _start
+    JMP
+
+.ORG 0x0004
+    LDA A, _halt
+    JMP
+
+.ORG 0x0008
+    LDA A, _halt
+    JMP
+
+.ORG 0x000C
+    LDA A, _halt
+    JMP
+
+; ------------------------------------------------------------
+; Code
+; ------------------------------------------------------------
+.ORG 0x0010
+_start:
+    ; SP = 0xEBFF
+    LDA SP, 0xEBFF
+
+    ; display mode = pixel
+    LDA A, 0xFF30
+    LDI D, 1
+    STORE D, [A+0]
+
+    ; enable timer
+    LDA A, 0xFF10
+    LDI D, 1
+    STORE D, [A+0]
+
+    ; clear screen and init row base table
+    LDA A, _clear_screen
+    CALL
+    LDA A, _init_rows
+    CALL
+
+    ; playerWX = 17
+    LDA A, 0x0800
+    LDI D, 17
+    STORE D, [A+0]
+
+    ; playerY = 110
+    LDA A, 0x0801
+    LDI D, 110
+    STORE D, [A+0]
+
+    ; bulletWX = 0
+    LDA A, 0x0802
+    CLR D
+    STORE D, [A+0]
+
+    ; bulletY = 0
+    LDA A, 0x0803
+    CLR D
+    STORE D, [A+0]
+
+    ; bulletActive = 0
+    LDA A, 0x0804
+    CLR D
+    STORE D, [A+0]
+
+    ; alienDir = 1
+    LDA A, 0x0805
+    LDI D, 1
+    STORE D, [A+0]
+
+    ; alienTick = 0
+    LDA A, 0x0806
+    CLR D
+    STORE D, [A+0]
+
+    ; moveDown = 0
+    LDA A, 0x0807
+    CLR D
+    STORE D, [A+0]
+
+    ; key = 0
+    LDA A, 0x0808
+    CLR D
+    STORE D, [A+0]
+
+    ; hit = -1
+    LDA A, 0x0809
+    LDI D, -1
+    STORE D, [A+0]
+
+    ; i = 0
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+    ; startWX = 2
+    LDA A, 0x080B
+    LDI D, 2
+    STORE D, [A+0]
+
+    ; init aliens
+_init_aliens_loop:
+    ; if i >= 5 -> done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _init_aliens_done
+
+    ; slotAddr = &alienWX[i]
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0980
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; alienWX[i] = startWX
+    LDA A, 0x080B
+    LOAD D, [A+0]
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+    ; slotAddr = &alienY[i]
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0985
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; alienY[i] = 8
+    LDI D, 8
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+    ; slotAddr = &alienActive[i]
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x098A
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; alienActive[i] = 1
+    LDI D, 1
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+    ; startWX += 6
+    LDA A, 0x080B
+    LOAD D, [A+0]
+    LDI B, 6
+    ADD D, B
+    STORE D, [A+0]
+
+    ; i += 1
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    BRNZP _init_aliens_loop
+
+_init_aliens_done:
+    ; draw player once
+    LDA A, _draw_player_white
+    CALL
+
+    ; draw aliens once
+    LDA A, _draw_all_aliens_white
+    CALL
+
+    ; frameStartLow = millis
+    LDA A, _get_millis_low
+    CALL
+    LDA A, 0x080C
+    STORE D, [A+0]
+
+_main_loop:
+    ; read keyboard
+    LDA A, _read_key
+    CALL
+
+    ; quit on Q / q
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 81
+    SUB D, B
+    BRZ _quit
+
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 113
+    SUB D, B
+    BRZ _quit
+
+    ; --------------------------------------------------------
+    ; move left on 130 / 97 / 65
+    ; --------------------------------------------------------
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 130
+    SUB D, B
+    BRZ _do_left
+
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 97
+    SUB D, B
+    BRZ _do_left
+
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 65
+    SUB D, B
+    BRZ _do_left
+
+    BRNZP _after_left
+
+_do_left:
+    ; if playerWX == 0 -> skip
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _after_left
+
+    LDA A, _draw_player_black
+    CALL
+
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDI B, 1
+    SUB D, B
+    STORE D, [A+0]
+
+    LDA A, _draw_player_white
+    CALL
+
+_after_left:
+    ; --------------------------------------------------------
+    ; move right on 132 / 100 / 68
+    ; --------------------------------------------------------
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 132
+    SUB D, B
+    BRZ _do_right
+
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 100
+    SUB D, B
+    BRZ _do_right
+
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 68
+    SUB D, B
+    BRZ _do_right
+
+    BRNZP _after_right
+
+_do_right:
+    ; if playerWX < 38 then move
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDI B, 38
+    SUB D, B
+    BRN _right_can_move
+    BRNZP _after_right
+
+_right_can_move:
+    LDA A, _draw_player_black
+    CALL
+
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    LDA A, _draw_player_white
+    CALL
+
+_after_right:
+    ; --------------------------------------------------------
+    ; shoot on space if bullet inactive
+    ; --------------------------------------------------------
+    LDA A, 0x0808
+    LOAD D, [A+0]
+    LDI B, 32
+    SUB D, B
+    BRNP _after_shoot
+
+    LDA A, 0x0804
+    LOAD D, [A+0]
+    OR D, D
+    BRNP _after_shoot
+
+    ; bulletActive = 1
+    LDA A, 0x0804
+    LDI D, 1
+    STORE D, [A+0]
+
+    ; bulletWX = playerWX
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDA A, 0x0802
+    STORE D, [A+0]
+
+    ; bulletY = playerY - 4
+    LDA A, 0x0801
+    LOAD D, [A+0]
+    LDI B, 4
+    SUB D, B
+    LDA A, 0x0803
+    STORE D, [A+0]
+
+    LDA A, _draw_bullet_white
+    CALL
+
+_after_shoot:
+    ; --------------------------------------------------------
+    ; bullet update
+    ; --------------------------------------------------------
+    LDA A, 0x0804
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _after_bullet_update
+
+    LDA A, _draw_bullet_black
+    CALL
+
+    ; bulletY -= 4
+    LDA A, 0x0803
+    LOAD D, [A+0]
+    LDI B, 4
+    SUB D, B
+    STORE D, [A+0]
+
+    ; if bulletY < 0 -> bulletActive = 0
+    OR D, D
+    BRN _bullet_offscreen
+    BRNZP _after_bullet_update
+
+_bullet_offscreen:
+    LDA A, 0x0804
+    CLR D
+    STORE D, [A+0]
+
+_after_bullet_update:
+    ; --------------------------------------------------------
+    ; collision check
+    ; --------------------------------------------------------
+    LDA A, 0x0804
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _after_collision
+
+    LDA A, _check_bullet_hit
+    CALL
+
+    ; if hit < 0 -> nothing
+    LDA A, 0x0809
+    LOAD D, [A+0]
+    OR D, D
+    BRN _after_collision
+
+    ; alienActive[hit] = 0
+    LDA A, 0x0809
+    LOAD D, [A+0]
+    LDA A, 0x098A
+    ADD A, D
+    CLR D
+    STORE D, [A+0]
+
+    ; i = hit
+    LDA A, 0x0809
+    LOAD D, [A+0]
+    LDA A, 0x080A
+    STORE D, [A+0]
+
+    ; erase hit alien
+    LDA A, _draw_alien_i_black
+    CALL
+
+    ; bulletActive = 0
+    LDA A, 0x0804
+    CLR D
+    STORE D, [A+0]
+
+_after_collision:
+    ; redraw bullet if still active
+    LDA A, 0x0804
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _after_bullet_redraw
+
+    LDA A, _draw_bullet_white
+    CALL
+
+_after_bullet_redraw:
+    ; --------------------------------------------------------
+    ; alien tick / step
+    ; --------------------------------------------------------
+    LDA A, 0x0806
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    ; if alienTick >= 4 -> step aliens
+    LDI B, 4
+    SUB D, B
+    BRN _after_alien_step
+
+    ; alienTick = 0
+    LDA A, 0x0806
+    CLR D
+    STORE D, [A+0]
+
+    LDA A, _step_aliens
+    CALL
+
+_after_alien_step:
+    ; wait ~33 ms
+    LDA A, _wait_next_frame
+    CALL
+
+    LDA A, _main_loop
+    JMP
+
+_quit:
+_halt:
+    BRNZP _halt
+
+; ------------------------------------------------------------
+; read_key
+; key = 0 if no key is ready, else consume 1 key from FF01.
+; ------------------------------------------------------------
+_read_key:
+    LDA A, 0xFF00
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _rk_none
+
+    LOAD D, [A+1]
+    LDA A, 0x0808
+    STORE D, [A+0]
+    RET
+
+_rk_none:
+    LDA A, 0x0808
+    CLR D
+    STORE D, [A+0]
+    RET
+
+; ------------------------------------------------------------
+; get_millis_low -> D
+; ------------------------------------------------------------
+_get_millis_low:
+    LDA A, 0xFF10
+    LOAD D, [A+3]
+    RET
+
+; ------------------------------------------------------------
+; wait_next_frame
+; crude ~30 FPS pacing using millis low only.
+; ------------------------------------------------------------
+_wait_next_frame:
+_wnf_loop:
+    LDA A, _get_millis_low
+    CALL
+
+    ; D = now - frameStartLow
+    LDA A, 0x080C
+    LOAD B, [A+0]
+    SUB D, B
+
+    ; if (delta - 33) < 0 -> keep waiting
+    LDI B, 33
+    SUB D, B
+    BRN _wnf_loop
+
+    ; frameStartLow += 33
+    LDA A, 0x080C
+    LOAD D, [A+0]
+    LDI B, 33
+    ADD D, B
+    STORE D, [A+0]
+    RET
+
+; ------------------------------------------------------------
+; clear_screen
+; ------------------------------------------------------------
+_clear_screen:
+    ; curAddr = VRAM_BASE
+    LDA A, 0x0813
+    LDA D, 0xEC00
+    STORE D, [A+0]
+
+    ; count = 4800
+    LDA A, 0x0815
+    LDA D, 4800
+    STORE D, [A+0]
+
+_cs_loop:
+    ; if count == 0 -> done
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _cs_done
+
+    ; *curAddr = 0
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    MOV A, D
+    CLR D
+    STORE D, [A+0]
+
+    ; curAddr += 1
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    ; count -= 1
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    LDI B, 1
+    SUB D, B
+    STORE D, [A+0]
+
+    BRNZP _cs_loop
+
+_cs_done:
+    RET
+
+; ------------------------------------------------------------
+; init_rows
+; rows[y] = VRAM_BASE + y*40, y=0..119
+; ------------------------------------------------------------
+_init_rows:
+    ; i = 0
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+    ; curAddr = VRAM_BASE
+    LDA A, 0x0813
+    LDA D, 0xEC00
+    STORE D, [A+0]
+
+_ir_loop:
+    ; if i >= 120 -> done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 120
+    SUB D, B
+    BRZP _ir_done
+
+    ; slotAddr = 0x0900 + i
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0900
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; rows[i] = curAddr
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+    ; curAddr += 40
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDI B, 40
+    ADD D, B
+    STORE D, [A+0]
+
+    ; i += 1
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    BRNZP _ir_loop
+
+_ir_done:
+    RET
+
+; ------------------------------------------------------------
+; draw2x4  args: argWX(0810), argY(0811), argColor(0812)
+; ------------------------------------------------------------
+_draw2x4:
+    ; curAddr = rows[argY] + argWX
+    LDA A, 0x0811
+    LOAD D, [A+0]
+    LDA A, 0x0900
+    ADD A, D
+    LOAD D, [A+0]
+
+    LDA A, 0x0810
+    LOAD B, [A+0]
+    ADD D, B
+
+    LDA A, 0x0813
+    STORE D, [A+0]
+
+    ; count = 4
+    LDA A, 0x0815
+    LDI D, 4
+    STORE D, [A+0]
+
+_d24_loop:
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _d24_done
+
+    ; store 2 words of color at cur row
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDA A, 0x0812
+    LOAD B, [A+0]
+    MOV A, D
+    STORE B, [A+0]
+    STORE B, [A+1]
+
+    ; curAddr += 40
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDI B, 40
+    ADD D, B
+    STORE D, [A+0]
+
+    ; count -= 1
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    LDI B, 1
+    SUB D, B
+    STORE D, [A+0]
+
+    BRNZP _d24_loop
+
+_d24_done:
+    RET
+
+; ------------------------------------------------------------
+; draw1x4  args: argWX(0810), argY(0811), argColor(0812)
+; ------------------------------------------------------------
+_draw1x4:
+    ; curAddr = rows[argY] + argWX
+    LDA A, 0x0811
+    LOAD D, [A+0]
+    LDA A, 0x0900
+    ADD A, D
+    LOAD D, [A+0]
+
+    LDA A, 0x0810
+    LOAD B, [A+0]
+    ADD D, B
+
+    LDA A, 0x0813
+    STORE D, [A+0]
+
+    ; count = 4
+    LDA A, 0x0815
+    LDI D, 4
+    STORE D, [A+0]
+
+_d14_loop:
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _d14_done
+
+    ; store 1 word of color at cur row
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDA A, 0x0812
+    LOAD B, [A+0]
+    MOV A, D
+    STORE B, [A+0]
+
+    ; curAddr += 40
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDI B, 40
+    ADD D, B
+    STORE D, [A+0]
+
+    ; count -= 1
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    LDI B, 1
+    SUB D, B
+    STORE D, [A+0]
+
+    BRNZP _d14_loop
+
+_d14_done:
+    RET
+
+; ------------------------------------------------------------
+; draw2x8  args: argWX(0810), argY(0811), argColor(0812)
+; ------------------------------------------------------------
+_draw2x8:
+    ; curAddr = rows[argY] + argWX
+    LDA A, 0x0811
+    LOAD D, [A+0]
+    LDA A, 0x0900
+    ADD A, D
+    LOAD D, [A+0]
+
+    LDA A, 0x0810
+    LOAD B, [A+0]
+    ADD D, B
+
+    LDA A, 0x0813
+    STORE D, [A+0]
+
+    ; count = 8
+    LDA A, 0x0815
+    LDI D, 8
+    STORE D, [A+0]
+
+_d28_loop:
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _d28_done
+
+    ; store 2 words of color at cur row
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDA A, 0x0812
+    LOAD B, [A+0]
+    MOV A, D
+    STORE B, [A+0]
+    STORE B, [A+1]
+
+    ; curAddr += 40
+    LDA A, 0x0813
+    LOAD D, [A+0]
+    LDI B, 40
+    ADD D, B
+    STORE D, [A+0]
+
+    ; count -= 1
+    LDA A, 0x0815
+    LOAD D, [A+0]
+    LDI B, 1
+    SUB D, B
+    STORE D, [A+0]
+
+    BRNZP _d28_loop
+
+_d28_done:
+    RET
+
+; ------------------------------------------------------------
+; draw player helpers
+; ------------------------------------------------------------
+_draw_player_white:
+    ; argWX = playerWX
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = playerY
+    LDA A, 0x0801
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = white
+    LDA A, 0x0812
+    LDI D, -1
+    STORE D, [A+0]
+
+    LDA A, _draw2x4
+    CALL
+    RET
+
+_draw_player_black:
+    ; argWX = playerWX
+    LDA A, 0x0800
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = playerY
+    LDA A, 0x0801
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = black
+    LDA A, 0x0812
+    CLR D
+    STORE D, [A+0]
+
+    LDA A, _draw2x4
+    CALL
+    RET
+
+; ------------------------------------------------------------
+; draw bullet helpers
+; ------------------------------------------------------------
+_draw_bullet_white:
+    ; argWX = bulletWX
+    LDA A, 0x0802
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = bulletY
+    LDA A, 0x0803
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = white
+    LDA A, 0x0812
+    LDI D, -1
+    STORE D, [A+0]
+
+    LDA A, _draw1x4
+    CALL
+    RET
+
+_draw_bullet_black:
+    ; argWX = bulletWX
+    LDA A, 0x0802
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = bulletY
+    LDA A, 0x0803
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = black
+    LDA A, 0x0812
+    CLR D
+    STORE D, [A+0]
+
+    LDA A, _draw1x4
+    CALL
+    RET
+
+; ------------------------------------------------------------
+; draw alien i helpers (uses i at 0x080A)
+; ------------------------------------------------------------
+_draw_alien_i_white:
+    ; argWX = alienWX[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0980
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = alienY[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0985
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = white
+    LDA A, 0x0812
+    LDI D, -1
+    STORE D, [A+0]
+
+    LDA A, _draw2x8
+    CALL
+    RET
+
+_draw_alien_i_black:
+    ; argWX = alienWX[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0980
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x0810
+    STORE D, [A+0]
+
+    ; argY = alienY[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0985
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x0811
+    STORE D, [A+0]
+
+    ; argColor = black
+    LDA A, 0x0812
+    CLR D
+    STORE D, [A+0]
+
+    LDA A, _draw2x8
+    CALL
+    RET
+
+; ------------------------------------------------------------
+; draw all aliens helpers
+; ------------------------------------------------------------
+_draw_all_aliens_white:
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+_daaw_loop:
+    ; if i >= 5 -> done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _daaw_done
+
+    ; if alienActive[i] == 0 -> skip
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x098A
+    ADD A, B
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _daaw_next
+
+    LDA A, _draw_alien_i_white
+    CALL
+
+_daaw_next:
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+    BRNZP _daaw_loop
+
+_daaw_done:
+    RET
+
+_draw_all_aliens_black:
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+_daab_loop:
+    ; if i >= 5 -> done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _daab_done
+
+    ; if alienActive[i] == 0 -> skip
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x098A
+    ADD A, B
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _daab_next
+
+    LDA A, _draw_alien_i_black
+    CALL
+
+_daab_next:
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+    BRNZP _daab_loop
+
+_daab_done:
+    RET
+
+; ------------------------------------------------------------
+; check_bullet_hit
+; Writes hit index or -1 to 0x0809
+; ------------------------------------------------------------
+_check_bullet_hit:
+    ; hit = -1
+    LDA A, 0x0809
+    LDI D, -1
+    STORE D, [A+0]
+
+    ; i = 0
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+_cbh_loop:
+    ; if i >= 5 -> done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _cbh_done
+
+    ; if alienActive[i] == 0 -> next
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x098A
+    ADD A, B
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _cbh_next
+
+    ; tmp0 = alienWX[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0980
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x080D
+    STORE D, [A+0]
+
+    ; x match #1: bulletWX == alienWX[i]
+    LDA A, 0x0802
+    LOAD D, [A+0]
+    LDA A, 0x080D
+    LOAD B, [A+0]
+    SUB D, B
+    BRZ _cbh_x_ok
+
+    ; x match #2: bulletWX == alienWX[i] + 1
+    LDA A, 0x080D
+    LOAD B, [A+0]
+    LDI D, 1
+    ADD B, D
+    LDA A, 0x0802
+    LOAD D, [A+0]
+    SUB D, B
+    BRZ _cbh_x_ok
+
+    BRNZP _cbh_next
+
+_cbh_x_ok:
+    ; tmp1 = alienY[i]
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x0985
+    ADD A, B
+    LOAD D, [A+0]
+    LDA A, 0x080E
+    STORE D, [A+0]
+
+    ; check bulletY <= alienY + 8
+    LDA A, 0x080E
+    LOAD D, [A+0]
+    LDI B, 8
+    ADD D, B
+    LDA A, 0x0803
+    LOAD B, [A+0]
+    SUB D, B
+    BRN _cbh_next
+
+    ; check bulletY + 4 >= alienY
+    LDA A, 0x0803
+    LOAD D, [A+0]
+    LDI B, 4
+    ADD D, B
+    LDA A, 0x080E
+    LOAD B, [A+0]
+    SUB D, B
+    BRN _cbh_next
+
+    ; hit = i
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0809
+    STORE D, [A+0]
+    RET
+
+_cbh_next:
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+    BRNZP _cbh_loop
+
+_cbh_done:
+    RET
+
+; ------------------------------------------------------------
+; step_aliens
+; ------------------------------------------------------------
+_step_aliens:
+    ; erase current aliens
+    LDA A, _draw_all_aliens_black
+    CALL
+
+    ; moveDown = 0
+    LDA A, 0x0807
+    CLR D
+    STORE D, [A+0]
+
+    ; i = 0
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+_sa_move_loop:
+    ; if i >= 5 -> movement done
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _sa_after_move_loop
+
+    ; if alienActive[i] == 0 -> next
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x098A
+    ADD A, B
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _sa_move_next
+
+    ; slotAddr = &alienWX[i]
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0980
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; alienWX[i] += alienDir
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    LOAD D, [A+0]
+    LDA A, 0x0805
+    LOAD B, [A+0]
+    ADD D, B
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+    ; if alienWX[i] < 1 -> moveDown = 1
+    LDI B, 1
+    SUB D, B
+    BRN _sa_set_movedown
+
+    ; reload new alienWX[i]
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    LOAD D, [A+0]
+
+    ; if alienWX[i] > 37 -> moveDown = 1
+    LDI B, 37
+    SUB D, B
+    BRP _sa_set_movedown
+    BRNZP _sa_move_next
+
+_sa_set_movedown:
+    LDA A, 0x0807
+    LDI D, 1
+    STORE D, [A+0]
+
+_sa_move_next:
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+    BRNZP _sa_move_loop
+
+_sa_after_move_loop:
+    ; if moveDown == 0 -> skip reverse/down
+    LDA A, 0x0807
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _sa_redraw
+
+    ; alienDir = -alienDir
+    LDA A, 0x0805
+    LOAD D, [A+0]
+    NOT D
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+
+    ; i = 0
+    LDA A, 0x080A
+    CLR D
+    STORE D, [A+0]
+
+_sa_down_loop:
+    ; if i >= 5 -> done lowering
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 5
+    SUB D, B
+    BRZP _sa_redraw
+
+    ; if alienActive[i] == 0 -> next
+    LDA A, 0x080A
+    LOAD B, [A+0]
+    LDA A, 0x098A
+    ADD A, B
+    LOAD D, [A+0]
+    OR D, D
+    BRZ _sa_down_next
+
+    ; slotAddr = &alienY[i]
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDA A, 0x0985
+    ADD A, D
+    MOV D, A
+    LDA A, 0x0814
+    STORE D, [A+0]
+
+    ; alienY[i] += 4
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    LOAD D, [A+0]
+    LDI B, 4
+    ADD D, B
+    LDA A, 0x0814
+    LOAD B, [A+0]
+    MOV A, B
+    STORE D, [A+0]
+
+_sa_down_next:
+    LDA A, 0x080A
+    LOAD D, [A+0]
+    LDI B, 1
+    ADD D, B
+    STORE D, [A+0]
+    BRNZP _sa_down_loop
+
+_sa_redraw:
+    LDA A, _draw_all_aliens_white
+    CALL
+    RET
